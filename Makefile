@@ -1,7 +1,8 @@
 APP_NAME := git-bridge
 BUILD_DIR := bin
-IMAGE_NAME := your-registry/library/$(APP_NAME)
-IMAGE_TAG := latest
+IMG ?= somaz940/git-bridge:v0.1.0
+CONTAINER_TOOL ?= docker
+PLATFORMS ?= linux/arm64,linux/amd64
 
 .PHONY: all build run test clean docker-build docker-push fmt vet lint
 
@@ -49,15 +50,32 @@ lint:
 
 ## Docker
 docker-build:
-	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
+	$(CONTAINER_TOOL) build -t ${IMG} .
 
-docker-push: docker-build
-	docker push $(IMAGE_NAME):$(IMAGE_TAG)
+docker-push:
+	$(CONTAINER_TOOL) push ${IMG}
+
+docker-buildx-tag:
+	- $(CONTAINER_TOOL) buildx create --name git-bridge-builder
+	$(CONTAINER_TOOL) buildx use git-bridge-builder
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) \
+		--tag ${IMG} \
+		-f Dockerfile .
+	- $(CONTAINER_TOOL) buildx rm git-bridge-builder
+
+docker-buildx-latest:
+	- $(CONTAINER_TOOL) buildx create --name git-bridge-builder
+	$(CONTAINER_TOOL) buildx use git-bridge-builder
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) \
+		--tag $(shell echo ${IMG} | cut -f1 -d:):latest \
+		-f Dockerfile .
+	- $(CONTAINER_TOOL) buildx rm git-bridge-builder
+
+docker-buildx: docker-buildx-tag docker-buildx-latest
 
 ## K8s Deploy
 deploy:
 	kubectl apply -f k8s/namespace.yaml
-	kubectl apply -f k8s/registry-secret.yaml
 	kubectl apply -f k8s/secret.yaml
 	kubectl apply -f k8s/configmap.yaml
 	kubectl apply -f k8s/deployment.yaml
@@ -79,17 +97,20 @@ tidy:
 ## Help
 help:
 	@echo "Usage:"
-	@echo "  make build         - Build binary"
-	@echo "  make run           - Build and run locally"
-	@echo "  make test          - Run tests"
-	@echo "  make test-cover    - Run tests with coverage"
-	@echo "  make fmt           - Format code"
-	@echo "  make vet           - Run go vet"
-	@echo "  make lint          - Run golangci-lint"
-	@echo "  make docker-build  - Build Docker image"
-	@echo "  make docker-push   - Build and push Docker image"
-	@echo "  make deploy        - Deploy to Kubernetes"
-	@echo "  make restart       - Restart deployment"
-	@echo "  make logs          - Tail pod logs"
-	@echo "  make clean         - Remove build artifacts"
-	@echo "  make tidy          - Run go mod tidy"
+	@echo "  make build              - Build binary"
+	@echo "  make run                - Build and run locally"
+	@echo "  make test               - Run tests"
+	@echo "  make test-cover         - Run tests with coverage"
+	@echo "  make fmt                - Format code"
+	@echo "  make vet                - Run go vet"
+	@echo "  make lint               - Run golangci-lint"
+	@echo "  make docker-build       - Build Docker image"
+	@echo "  make docker-push        - Push Docker image"
+	@echo "  make docker-buildx-tag  - Build and push multi-arch image (version tag)"
+	@echo "  make docker-buildx-latest - Build and push multi-arch image (latest tag)"
+	@echo "  make docker-buildx      - Build and push multi-arch image (both tags)"
+	@echo "  make deploy             - Deploy to Kubernetes"
+	@echo "  make restart            - Restart deployment"
+	@echo "  make logs               - Tail pod logs"
+	@echo "  make clean              - Remove build artifacts"
+	@echo "  make tidy               - Run go mod tidy"

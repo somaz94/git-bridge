@@ -17,11 +17,9 @@ spec:
       labels:
         app: git-bridge
     spec:
-      imagePullSecrets:
-        - name: registry-secret
       containers:
         - name: git-bridge
-          image: your-registry/git-bridge:latest
+          image: somaz940/git-bridge:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8080

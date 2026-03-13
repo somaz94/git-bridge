@@ -90,7 +90,6 @@ git-bridge/
 ├── k8s/                    # Kubernetes manifests (production, minimal comments)
 │   ├── namespace.yaml
 │   ├── secret.yaml         # Credentials only (tokens, keys, passwords)
-│   ├── registry-secret.yaml
 │   ├── configmap.yaml      # config.yaml (repos defined directly, credentials via ${ENV_VAR})
 │   └── deployment.yaml     # Deployment + Service + Ingress
 ├── examples/               # Example files with detailed comments
@@ -214,7 +213,6 @@ make docker-build
 kubectl apply -f k8s/namespace.yaml
 
 # 2. Create secrets (edit secret.yaml values first!)
-kubectl apply -f k8s/registry-secret.yaml
 kubectl apply -f k8s/secret.yaml
 
 # 3. Create configmap and deployment
