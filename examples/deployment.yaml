@@ -1,0 +1,275 @@
+# =============================================================================
+# Git-Bridge Deployment Example
+# =============================================================================
+#
+# Includes: Deployment, Service, and Ingress resources.
+#
+# Environment variables are injected from the K8s Secret (git-bridge-secret).
+# The config file is mounted from the ConfigMap (git-bridge-config).
+#
+# To add a new provider instance, add env vars in the corresponding section
+# and create matching entries in both Secret and ConfigMap.
+#
+# Naming convention: <TYPE>_<NAME>_<FIELD>
+# See docs/naming-convention.md for the full guide.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: git-bridge
+  namespace: git-bridge
+  labels:
+    app: git-bridge
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate            # Recreate to avoid concurrent git operations
+  selector:
+    matchLabels:
+      app: git-bridge
+  template:
+    metadata:
+      labels:
+        app: git-bridge
+    spec:
+      # Uncomment if using a private container registry
+      # imagePullSecrets:
+      #   - name: registry-secret
+      containers:
+        - name: git-bridge
+          image: your-registry/git-bridge:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          env:
+            # -----------------------------------------------------------------
+            # Config path (mounted from ConfigMap)
+            # -----------------------------------------------------------------
+            - name: CONFIG_PATH
+              value: /etc/git-bridge/config.yaml
+
+            # -----------------------------------------------------------------
+            # CodeCommit — EU
+            # -----------------------------------------------------------------
+            - name: CODECOMMIT_EU_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: git-bridge-secret
+                  key: CODECOMMIT_EU_REGION
+            - name: CODECOMMIT_EU_GIT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: git-bridge-secret
+                  key: CODECOMMIT_EU_GIT_USERNAME
+            - name: CODECOMMIT_EU_GIT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: git-bridge-secret
+                  key: CODECOMMIT_EU_GIT_PASSWORD
+
+            # CodeCommit — US (uncomment to add multi-region)
+            # - name: CODECOMMIT_US_REGION
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: git-bridge-secret
+            #       key: CODECOMMIT_US_REGION
+            # - name: CODECOMMIT_US_GIT_USERNAME
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: git-bridge-secret
+            #       key: CODECOMMIT_US_GIT_USERNAME
+            # - name: CODECOMMIT_US_GIT_PASSWORD
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: git-bridge-secret
+            #       key: CODECOMMIT_US_GIT_PASSWORD
+
+            # -----------------------------------------------------------------
+            # GitLab — main
+            # -----------------------------------------------------------------
+            - name: GITLAB_MAIN_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: git-bridge-secret
+                  key: GITLAB_MAIN_BASE_URL
+            - name: GITLAB_MAIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: git-bridge-secret
+                  key: GITLAB_MAIN_TOKEN
+
+            # GitLab — secondary (uncomment to add multi-instance)
+            # - name: GITLAB_SECONDARY_BASE_URL
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: git-bridge-secret
+            #       key: GITLAB_SECONDARY_BASE_URL
+            # - name: GITLAB_SECONDARY_TOKEN
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: git-bridge-secret
+            #       key: GITLAB_SECONDARY_TOKEN
+
+            # -----------------------------------------------------------------
+            # GitHub — main
+            # -----------------------------------------------------------------
+            - name: GITHUB_MAIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: git-bridge-secret
+                  key: GITHUB_MAIN_TOKEN
+
+            # GitHub — secondary (uncomment to add multi-account)
+            # - name: GITHUB_SECONDARY_TOKEN
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: git-bridge-secret
+            #       key: GITHUB_SECONDARY_TOKEN
+
+            # -----------------------------------------------------------------
+            # SQS Consumer — EU
+            # -----------------------------------------------------------------
+            - name: SQS_EU_QUEUE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: git-bridge-secret
+                  key: SQS_EU_QUEUE_URL
+            - name: SQS_EU_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: git-bridge-secret
+                  key: SQS_EU_REGION
+            - name: SQS_EU_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: git-bridge-secret
+                  key: SQS_EU_ACCESS_KEY
+            - name: SQS_EU_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: git-bridge-secret
+                  key: SQS_EU_SECRET_KEY
+
+            # SQS Consumer — US (uncomment to add multi-region)
+            # - name: SQS_US_QUEUE_URL
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: git-bridge-secret
+            #       key: SQS_US_QUEUE_URL
+            # - name: SQS_US_REGION
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: git-bridge-secret
+            #       key: SQS_US_REGION
+            # - name: SQS_US_ACCESS_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: git-bridge-secret
+            #       key: SQS_US_ACCESS_KEY
+            # - name: SQS_US_SECRET_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: git-bridge-secret
+            #       key: SQS_US_SECRET_KEY
+
+            # -----------------------------------------------------------------
+            # Webhook Secrets
+            # -----------------------------------------------------------------
+            - name: WEBHOOK_GITLAB_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: git-bridge-secret
+                  key: WEBHOOK_GITLAB_SECRET
+            - name: WEBHOOK_GITHUB_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: git-bridge-secret
+                  key: WEBHOOK_GITHUB_SECRET
+
+            # -----------------------------------------------------------------
+            # Notification
+            # -----------------------------------------------------------------
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: git-bridge-secret
+                  key: SLACK_WEBHOOK_URL
+          volumeMounts:
+            - name: config
+              mountPath: /etc/git-bridge
+              readOnly: true
+            - name: work
+              mountPath: /tmp/git-bridge
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: git-bridge-config
+        - name: work
+          emptyDir: {}
+---
+# =============================================================================
+# Service
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: git-bridge
+  namespace: git-bridge
+  labels:
+    app: git-bridge
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+  selector:
+    app: git-bridge
+---
+# =============================================================================
+# Ingress
+# =============================================================================
+# Adjust host, ingressClassName, and annotations for your environment.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: git-bridge
+  namespace: git-bridge
+  labels:
+    app: git-bridge
+  annotations:
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: git-bridge.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: git-bridge
+                port:
+                  number: 80

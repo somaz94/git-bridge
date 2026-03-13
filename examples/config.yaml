@@ -1,0 +1,191 @@
+# =============================================================================
+# Git-Bridge Configuration Example
+# =============================================================================
+#
+# This file shows all available configuration options with detailed comments.
+# Copy this file and modify values for your environment.
+#
+# Credentials use ${ENV_VAR} syntax — expanded at startup from environment
+# variables (injected via K8s Secret in production).
+#
+# Naming convention: <TYPE>_<NAME>_<FIELD>
+#   - TYPE:  Resource type (CODECOMMIT, GITLAB, GITHUB, SQS)
+#   - NAME:  Free-form identifier (EU, US, MAIN, SECONDARY, PROD, etc.)
+#   - FIELD: Field name (REGION, TOKEN, QUEUE_URL, etc.)
+#
+# See docs/naming-convention.md for the full guide.
+# =============================================================================
+
+server:
+  port: 8080  # HTTP server port (default: 8080)
+
+# =============================================================================
+# Providers
+# =============================================================================
+#
+# Provider names (map keys) are referenced in repos.source / repos.target.
+# Multiple providers of the same type can be configured with different names.
+#
+# Supported types: codecommit, gitlab, github
+# =============================================================================
+providers:
+  # ---------------------------------------------------------------------------
+  # CodeCommit — use geographic naming for AWS region-based services
+  # ---------------------------------------------------------------------------
+  codecommit-eu:
+    type: codecommit
+    region: "${CODECOMMIT_EU_REGION}"                     # e.g. eu-central-1
+    credentials:
+      git_username: "${CODECOMMIT_EU_GIT_USERNAME}"       # HTTPS Git credentials
+      git_password: "${CODECOMMIT_EU_GIT_PASSWORD}"       # from IAM > Security credentials
+
+  # Multi-region example: uncomment to add US region
+  # codecommit-us:
+  #   type: codecommit
+  #   region: "${CODECOMMIT_US_REGION}"                   # e.g. us-east-1
+  #   credentials:
+  #     git_username: "${CODECOMMIT_US_GIT_USERNAME}"
+  #     git_password: "${CODECOMMIT_US_GIT_PASSWORD}"
+
+  # ---------------------------------------------------------------------------
+  # GitLab — use descriptive naming for instance-based services
+  # ---------------------------------------------------------------------------
+  gitlab-main:
+    type: gitlab
+    base_url: "${GITLAB_MAIN_BASE_URL}"                   # e.g. https://gitlab.example.com
+    credentials:
+      token: "${GITLAB_MAIN_TOKEN}"                       # Personal Access Token (api scope)
+
+  # Multi-instance example: uncomment to add staging instance
+  # gitlab-secondary:
+  #   type: gitlab
+  #   base_url: "${GITLAB_SECONDARY_BASE_URL}"            # e.g. https://gitlab-staging.example.com
+  #   credentials:
+  #     token: "${GITLAB_SECONDARY_TOKEN}"
+
+  # ---------------------------------------------------------------------------
+  # GitHub — use descriptive naming for instance-based services
+  # ---------------------------------------------------------------------------
+  github-main:
+    type: github
+    credentials:
+      token: "${GITHUB_MAIN_TOKEN}"                       # Personal Access Token (repo scope)
+
+  # Multi-account example: uncomment to add secondary account
+  # github-secondary:
+  #   type: github
+  #   credentials:
+  #     token: "${GITHUB_SECONDARY_TOKEN}"
+
+# =============================================================================
+# Repos
+# =============================================================================
+#
+# Define repositories to mirror. Each entry specifies:
+#   - name:        Unique identifier for this mirror pair
+#   - source:      Provider name (must match a key in providers above)
+#   - target:      Provider name (must match a key in providers above)
+#   - source_path: Repository path on source provider
+#   - target_path: Repository path on target provider
+#   - direction:   Sync direction (see below)
+#
+# Direction values:
+#   source-to-target  — source → target (one-way, source triggers sync)
+#   target-to-source  — target → source (one-way, target webhook triggers sync)
+#   bidirectional     — both directions (either side can trigger sync)
+#
+# To add a new repo, just append an entry below.
+# No Secret or Deployment changes needed — only ConfigMap update + restart.
+# =============================================================================
+repos:
+  # CodeCommit(EU) → GitLab (one-way)
+  - name: git-bridge-test
+    source: codecommit-eu
+    target: gitlab-main
+    source_path: git-bridge-test
+    target_path: server/git-bridge-test
+    direction: source-to-target
+
+  # CodeCommit(EU) ↔ GitLab (bidirectional — requires GitLab webhook)
+  - name: web-app
+    source: codecommit-eu
+    target: gitlab-main
+    source_path: web-app
+    target_path: frontend/web-app
+    direction: bidirectional
+
+  # CodeCommit(EU) → GitLab (one-way)
+  - name: infra-terraform
+    source: codecommit-eu
+    target: gitlab-main
+    source_path: infra-terraform
+    target_path: devops/infra-terraform
+    direction: source-to-target
+
+  # GitLab → GitHub (one-way, different provider pair)
+  - name: open-source-lib
+    source: gitlab-main
+    target: github-main
+    source_path: team/open-source-lib
+    target_path: org/open-source-lib
+    direction: source-to-target
+
+  # Multi-provider example: CodeCommit(US) → GitLab
+  # - name: us-service
+  #   source: codecommit-us
+  #   target: gitlab-main
+  #   source_path: us-service
+  #   target_path: server/us-service
+  #   direction: source-to-target
+
+# =============================================================================
+# Consumers (SQS)
+# =============================================================================
+#
+# SQS consumers poll for CodeCommit events delivered via EventBridge → SQS.
+# Multiple consumers can be configured for multi-region/account setups.
+#
+# Env var pattern: SQS_<NAME>_QUEUE_URL, SQS_<NAME>_REGION,
+#                  SQS_<NAME>_ACCESS_KEY, SQS_<NAME>_SECRET_KEY
+#
+# Legacy single `consumer:` key is also supported (backward compatible).
+# =============================================================================
+consumers:
+  - name: sqs-eu
+    type: sqs
+    queue_url: "${SQS_EU_QUEUE_URL}"
+    region: "${SQS_EU_REGION}"
+    credentials:
+      access_key: "${SQS_EU_ACCESS_KEY}"
+      secret_key: "${SQS_EU_SECRET_KEY}"
+
+  # Multi-region example: uncomment to add US region
+  # - name: sqs-us
+  #   type: sqs
+  #   queue_url: "${SQS_US_QUEUE_URL}"
+  #   region: "${SQS_US_REGION}"
+  #   credentials:
+  #     access_key: "${SQS_US_ACCESS_KEY}"
+  #     secret_key: "${SQS_US_SECRET_KEY}"
+
+# =============================================================================
+# Webhook Secrets
+# =============================================================================
+#
+# Used to verify incoming webhook requests from GitLab/GitHub.
+# Leave empty to skip verification (not recommended for production).
+# =============================================================================
+webhook:
+  gitlab_secret: "${WEBHOOK_GITLAB_SECRET}"               # X-Gitlab-Token header verification
+  github_secret: "${WEBHOOK_GITHUB_SECRET}"               # HMAC-SHA256 signature verification
+
+# =============================================================================
+# Notification
+# =============================================================================
+#
+# Slack webhook for success/failure notifications.
+# Leave empty to disable notifications.
+# =============================================================================
+notification:
+  slack:
+    webhook_url: "${SLACK_WEBHOOK_URL}"

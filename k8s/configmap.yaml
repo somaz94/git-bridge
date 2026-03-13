@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: git-bridge-config
+  namespace: git-bridge
+data:
+  config.yaml: |
+    server:
+      port: 8080
+
+    providers:
+      codecommit-eu:
+        type: codecommit
+        region: "${CODECOMMIT_EU_REGION}"
+        credentials:
+          git_username: "${CODECOMMIT_EU_GIT_USERNAME}"
+          git_password: "${CODECOMMIT_EU_GIT_PASSWORD}"
+
+      gitlab-main:
+        type: gitlab
+        base_url: "${GITLAB_MAIN_BASE_URL}"
+        credentials:
+          token: "${GITLAB_MAIN_TOKEN}"
+
+      github-main:
+        type: github
+        credentials:
+          token: "${GITHUB_MAIN_TOKEN}"
+
+    repos:
+      - name: my-app
+        source: codecommit-eu
+        target: gitlab-main
+        source_path: my-app
+        target_path: server/my-app
+        direction: bidirectional
+
+      - name: my-lib
+        source: codecommit-eu
+        target: gitlab-main
+        source_path: my-lib
+        target_path: server/my-lib
+        direction: source-to-target
+
+    consumers:
+      - name: sqs-eu
+        type: sqs
+        queue_url: "${SQS_EU_QUEUE_URL}"
+        region: "${SQS_EU_REGION}"
+        credentials:
+          access_key: "${SQS_EU_ACCESS_KEY}"
+          secret_key: "${SQS_EU_SECRET_KEY}"
+
+    webhook:
+      gitlab_secret: "${WEBHOOK_GITLAB_SECRET}"
+      github_secret: "${WEBHOOK_GITHUB_SECRET}"
+
+    notification:
+      slack:
+        webhook_url: "${SLACK_WEBHOOK_URL}"
