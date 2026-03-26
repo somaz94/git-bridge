@@ -2,10 +2,6 @@
 
 Multi-provider, bidirectional Git repository mirroring tool (CodeCommit, GitLab, GitHub).
 
-- Do not include `Co-Authored-By` lines in commit messages.
-- Do not push to remote. Only commit. The user will push manually.
-- Do not modify git config.
-
 ## Project Structure
 
 - **Language**: Go 1.26+
@@ -42,6 +38,3 @@ make deploy         # Deploy to Kubernetes
 ```bash
 kubectl apply -f k8s
 ```
-
-- Communicate with the user in Korean.
-- All documentation and code comments must be written in English.
