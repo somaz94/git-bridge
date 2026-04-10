@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased (2026-04-10)
+
+### Documentation
+
+- remove duplicate rules covered by global CLAUDE.md ([aaf3062](https://github.com/somaz94/git-bridge/commit/aaf306208cd7400fdc4215817f43a2652223be24))
+- add DEVELOPMENT.md ([940ac4d](https://github.com/somaz94/git-bridge/commit/940ac4d458fd655efa4c77a683eee52adeb0a2a5))
+
+### Builds
+
+- **deps:** Bump dependabot/fetch-metadata from 2 to 3 ([4d84825](https://github.com/somaz94/git-bridge/commit/4d84825005c7b99d160b9503c913fab3b47e6a88))
+- **deps:** Bump the go-minor group with 2 updates (#4) ([#4](https://github.com/somaz94/git-bridge/pull/4)) ([338539f](https://github.com/somaz94/git-bridge/commit/338539f8a68e99bb2f166c3e6b98f63f9664f59e))
+- **deps:** Bump the go-minor group with 4 updates (#3) ([#3](https://github.com/somaz94/git-bridge/pull/3)) ([2d09da5](https://github.com/somaz94/git-bridge/commit/2d09da5ca3785304d48d6165174f9933acf319db))
+
+### Continuous Integration
+
+- skip auto-generated changelog and contributors commits in release notes ([2596fd7](https://github.com/somaz94/git-bridge/commit/2596fd772b9524818192e495810e566188cac397))
+- revert to body_path RELEASE.md in release workflow ([d81317d](https://github.com/somaz94/git-bridge/commit/d81317dcb8c7893b569a521900338e85d7937b5b))
+- use generate_release_notes instead of RELEASE.md ([d729059](https://github.com/somaz94/git-bridge/commit/d729059857512f9a05199643198af8525fe97049))
+- add auto-generated PR body script for make pr ([8c4ed4d](https://github.com/somaz94/git-bridge/commit/8c4ed4dae184189c14f5f1c04833778e93c212b4))
+
+### Chores
+
+- remove duplicate rules from CLAUDE.md (moved to global) ([f7c0b51](https://github.com/somaz94/git-bridge/commit/f7c0b517d6dcd0a17b9d387c5e6c42404e8c52f9))
+- add git config protection to CLAUDE.md ([ea02f04](https://github.com/somaz94/git-bridge/commit/ea02f044456e2e392f8305da15df2cf450c55b46))
+- add workflow Makefile targets (check-gh, branch, pr) ([7239588](https://github.com/somaz94/git-bridge/commit/72395889b55d652473e8c3761117b8cd014e7f6c))
+
+### Contributors
+
+- somaz
+
+<br/>
+
 ## [v0.3.0](https://github.com/somaz94/git-bridge/compare/v0.2.0...v0.3.0) (2026-03-20)
 
 ### Features
@@ -16,8 +48,6 @@ All notable changes to this project will be documented in this file.
 ### Documentation
 
 - add no-push rule to CLAUDE.md ([6e640ae](https://github.com/somaz94/git-bridge/commit/6e640ae398829a344eda10b8c2ea7aab8f73f872))
-- update CONTRIBUTORS.md ([3e0b3db](https://github.com/somaz94/git-bridge/commit/3e0b3db2df82d40498be5f663f9862c27d29bb31))
-- update changelog ([48294b6](https://github.com/somaz94/git-bridge/commit/48294b69e6295abdcb72c0f7cfda951a0239c838))
 
 ### Builds
 
@@ -44,10 +74,7 @@ All notable changes to this project will be documented in this file.
 
 - CLAUDE.md ([0acbff3](https://github.com/somaz94/git-bridge/commit/0acbff35a74d5ac485572df8a9e21a44102b5bb9))
 - add CLAUDE.md project guide ([1afd0ef](https://github.com/somaz94/git-bridge/commit/1afd0ef3f3a10db20cbb55fa406103530eb8748c))
-- update changelog ([daec38c](https://github.com/somaz94/git-bridge/commit/daec38c13e94db0b2bbafcde3495976a9cc76f58))
 - README.md ([2064c8a](https://github.com/somaz94/git-bridge/commit/2064c8ad404f2b3029a07652eecb44cdc6ca7aa9))
-- update CONTRIBUTORS.md ([20383cd](https://github.com/somaz94/git-bridge/commit/20383cdb74a7989122dedca2247652fe0b320f32))
-- update changelog ([0104baa](https://github.com/somaz94/git-bridge/commit/0104baa44fdac57ec6136504264e516dcae853ac))
 
 ### Tests
 
