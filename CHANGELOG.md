@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 
 ### Builds
 
+- **deps:** Bump actions/github-script from 8 to 9 ([6150862](https://github.com/somaz94/git-bridge/commit/61508623a9d9fa731aada4d34192891f56881291))
 - **deps:** Bump dependabot/fetch-metadata from 2 to 3 ([4d84825](https://github.com/somaz94/git-bridge/commit/4d84825005c7b99d160b9503c913fab3b47e6a88))
 - **deps:** Bump the go-minor group with 2 updates (#4) ([#4](https://github.com/somaz94/git-bridge/pull/4)) ([338539f](https://github.com/somaz94/git-bridge/commit/338539f8a68e99bb2f166c3e6b98f63f9664f59e))
 - **deps:** Bump the go-minor group with 4 updates (#3) ([#3](https://github.com/somaz94/git-bridge/pull/3)) ([2d09da5](https://github.com/somaz94/git-bridge/commit/2d09da5ca3785304d48d6165174f9933acf319db))
