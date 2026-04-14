@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -13,16 +15,31 @@ import (
 	"git-bridge/internal/mirror"
 	"git-bridge/internal/notify"
 	"git-bridge/internal/server"
+	"git-bridge/internal/version"
 )
 
 const defaultConfigPath = "/etc/git-bridge/config.yaml"
 
 func main() {
+	showVersion := flag.Bool("version", false, "Print version information and exit")
+	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.String())
+		return
+	}
+
 	// JSON structured logging
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
+
+	slog.Info("starting git-bridge",
+		"version", version.Version,
+		"commit", version.GitCommit,
+		"built", version.BuildDate,
+	)
 
 	// Load config
 	cfgPath := os.Getenv("CONFIG_PATH")
