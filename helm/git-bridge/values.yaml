@@ -1,0 +1,195 @@
+# Default values for git-bridge.
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 1
+
+revisionHistoryLimit: 3
+
+image:
+  repository: somaz940/git-bridge
+  pullPolicy: IfNotPresent
+  tag: "v0.3.0"
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+
+# ---------------------------------------------------------------------------
+# git-bridge config.yaml — rendered into a ConfigMap and mounted at
+# /etc/git-bridge/config.yaml. Credentials reference ${ENV_VAR} expansion
+# at runtime, backed by the Secret below.
+# ---------------------------------------------------------------------------
+config:
+  server:
+    port: 8080
+
+  providers: {}
+  # Example:
+  #   codecommit-eu:
+  #     type: codecommit
+  #     region: "${CODECOMMIT_EU_REGION}"
+  #     credentials:
+  #       git_username: "${CODECOMMIT_EU_GIT_USERNAME}"
+  #       git_password: "${CODECOMMIT_EU_GIT_PASSWORD}"
+  #   gitlab-main:
+  #     type: gitlab
+  #     base_url: "${GITLAB_MAIN_BASE_URL}"
+  #     credentials:
+  #       token: "${GITLAB_MAIN_TOKEN}"
+  #   github-main:
+  #     type: github
+  #     credentials:
+  #       token: "${GITHUB_MAIN_TOKEN}"
+
+  repos: []
+  # Example:
+  #   - name: my-app
+  #     source: codecommit-eu
+  #     target: gitlab-main
+  #     source_path: my-app
+  #     target_path: server/my-app
+  #     direction: bidirectional
+
+  consumers: []
+  # Example:
+  #   - name: sqs-eu
+  #     type: sqs
+  #     queue_url: "${SQS_EU_QUEUE_URL}"
+  #     region: "${SQS_EU_REGION}"
+  #     credentials:
+  #       access_key: "${SQS_EU_ACCESS_KEY}"
+  #       secret_key: "${SQS_EU_SECRET_KEY}"
+
+  webhook:
+    gitlab_secret: "${WEBHOOK_GITLAB_SECRET}"
+    github_secret: "${WEBHOOK_GITHUB_SECRET}"
+
+  notification:
+    slack:
+      webhook_url: "${SLACK_WEBHOOK_URL}"
+
+# ---------------------------------------------------------------------------
+# Secret — credentials referenced via ${ENV_VAR} in config.yaml.
+# Either let the chart create it (secret.create=true, secret.data=...),
+# or reference an externally managed Secret (secret.create=false,
+# secret.existingSecret=<name>).
+# ---------------------------------------------------------------------------
+secret:
+  create: true
+  existingSecret: ""
+  annotations: {}
+  data: {}
+  # Example (filled at deploy time, ideally via --set or sealed secrets):
+  #   CODECOMMIT_EU_REGION: "eu-central-1"
+  #   CODECOMMIT_EU_GIT_USERNAME: "..."
+  #   CODECOMMIT_EU_GIT_PASSWORD: "..."
+  #   GITLAB_MAIN_BASE_URL: "https://gitlab.example.com"
+  #   GITLAB_MAIN_TOKEN: "..."
+  #   GITHUB_MAIN_TOKEN: "..."
+  #   SQS_EU_QUEUE_URL: "..."
+  #   SQS_EU_REGION: "eu-central-1"
+  #   SQS_EU_ACCESS_KEY: "..."
+  #   SQS_EU_SECRET_KEY: "..."
+  #   WEBHOOK_GITLAB_SECRET: "..."
+  #   WEBHOOK_GITHUB_SECRET: "..."
+  #   SLACK_WEBHOOK_URL: "..."
+
+# Extra environment variables
+extraEnv: []
+# Example:
+#   - name: CUSTOM_VAR
+#     value: "custom-value"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: git-bridge.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: git-bridge-tls
+  #    hosts:
+  #      - git-bridge.example.com
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+probes:
+  liveness:
+    enabled: true
+    path: /health
+    port: http
+    initialDelaySeconds: 10
+    periodSeconds: 30
+  readiness:
+    enabled: true
+    path: /ready
+    port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+# ---------------------------------------------------------------------------
+# Persistent workspace for git mirror cache (used by `git clone --mirror`).
+# When disabled, /tmp/git-bridge falls back to emptyDir.
+# ---------------------------------------------------------------------------
+persistence:
+  enabled: false
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  storageClass: ""
+  existingClaim: ""
+  mountPath: /tmp/git-bridge
+
+# Extra volumes to add to the deployment
+extraVolumes: []
+# Example:
+#   - name: extra-data
+#     configMap:
+#       name: my-configmap
+
+# Extra volume mounts to add to the container
+extraVolumeMounts: []
+# Example:
+#   - name: extra-data
+#     mountPath: /extra
+#     readOnly: true
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

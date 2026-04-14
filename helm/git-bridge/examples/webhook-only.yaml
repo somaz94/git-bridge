@@ -1,0 +1,70 @@
+# GitHub ↔ GitLab bidirectional mirror driven by webhooks only (no SQS).
+# Expose the service via Ingress so external providers can reach it.
+
+replicaCount: 1
+
+config:
+  server:
+    port: 8080
+
+  providers:
+    github-main:
+      type: github
+      credentials:
+        token: "${GITHUB_MAIN_TOKEN}"
+
+    gitlab-main:
+      type: gitlab
+      base_url: "${GITLAB_MAIN_BASE_URL}"
+      credentials:
+        token: "${GITLAB_MAIN_TOKEN}"
+
+  repos:
+    - name: my-app
+      source: github-main
+      target: gitlab-main
+      source_path: org/my-app
+      target_path: team/my-app
+      direction: bidirectional
+
+  consumers: []
+
+  webhook:
+    gitlab_secret: "${WEBHOOK_GITLAB_SECRET}"
+    github_secret: "${WEBHOOK_GITHUB_SECRET}"
+
+  notification:
+    slack:
+      webhook_url: "${SLACK_WEBHOOK_URL}"
+
+secret:
+  create: true
+  data:
+    GITHUB_MAIN_TOKEN: "replace-me"
+    GITLAB_MAIN_BASE_URL: "https://gitlab.example.com"
+    GITLAB_MAIN_TOKEN: "replace-me"
+    WEBHOOK_GITHUB_SECRET: "replace-me"
+    WEBHOOK_GITLAB_SECRET: "replace-me"
+    SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/T.../B.../..."
+
+service:
+  type: ClusterIP
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: git-bridge.example.com
+      paths:
+        - path: /webhook
+          pathType: Prefix
+  tls:
+    - secretName: git-bridge-tls
+      hosts:
+        - git-bridge.example.com
+
+persistence:
+  enabled: true
+  size: 20Gi

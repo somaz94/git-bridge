@@ -1,0 +1,69 @@
+# Minimal CodeCommit → GitLab mirror with chart-managed Secret.
+# Replace token placeholders before installing.
+
+replicaCount: 1
+
+image:
+  tag: "v0.1.0"
+
+config:
+  server:
+    port: 8080
+
+  providers:
+    codecommit-eu:
+      type: codecommit
+      region: "${CODECOMMIT_EU_REGION}"
+      credentials:
+        git_username: "${CODECOMMIT_EU_GIT_USERNAME}"
+        git_password: "${CODECOMMIT_EU_GIT_PASSWORD}"
+
+    gitlab-main:
+      type: gitlab
+      base_url: "${GITLAB_MAIN_BASE_URL}"
+      credentials:
+        token: "${GITLAB_MAIN_TOKEN}"
+
+  repos:
+    - name: my-app
+      source: codecommit-eu
+      target: gitlab-main
+      source_path: my-app
+      target_path: server/my-app
+      direction: source-to-target
+
+  consumers:
+    - name: sqs-eu
+      type: sqs
+      queue_url: "${SQS_EU_QUEUE_URL}"
+      region: "${SQS_EU_REGION}"
+      credentials:
+        access_key: "${SQS_EU_ACCESS_KEY}"
+        secret_key: "${SQS_EU_SECRET_KEY}"
+
+  webhook:
+    gitlab_secret: "${WEBHOOK_GITLAB_SECRET}"
+    github_secret: ""
+
+  notification:
+    slack:
+      webhook_url: "${SLACK_WEBHOOK_URL}"
+
+secret:
+  create: true
+  data:
+    CODECOMMIT_EU_REGION: "eu-central-1"
+    CODECOMMIT_EU_GIT_USERNAME: "replace-me"
+    CODECOMMIT_EU_GIT_PASSWORD: "replace-me"
+    GITLAB_MAIN_BASE_URL: "https://gitlab.example.com"
+    GITLAB_MAIN_TOKEN: "replace-me"
+    SQS_EU_QUEUE_URL: "https://sqs.eu-central-1.amazonaws.com/123456789012/codecommit-mirror"
+    SQS_EU_REGION: "eu-central-1"
+    SQS_EU_ACCESS_KEY: "replace-me"
+    SQS_EU_SECRET_KEY: "replace-me"
+    WEBHOOK_GITLAB_SECRET: "replace-me"
+    SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/T.../B.../..."
+
+persistence:
+  enabled: true
+  size: 10Gi

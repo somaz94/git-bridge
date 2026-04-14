@@ -1,0 +1,26 @@
+apiVersion: v2
+name: git-bridge
+description: A Helm chart for git-bridge — multi-provider, bidirectional Git repository mirroring service
+type: application
+version: 0.3.0
+appVersion: "v0.3.0"
+
+kubeVersion: ">=1.16.0-0"
+
+keywords:
+  - git
+  - mirror
+  - sync
+  - codecommit
+  - gitlab
+  - github
+  - webhook
+  - sqs
+
+home: https://github.com/somaz94/git-bridge
+sources:
+  - https://github.com/somaz94/git-bridge
+
+maintainers:
+  - name: somaz94
+    url: https://github.com/somaz94
