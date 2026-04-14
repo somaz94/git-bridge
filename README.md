@@ -190,17 +190,40 @@ repos:
 ## Build
 
 ```bash
-# Build binary
+# Build binary (ldflags inject version/commit/build-date)
 make build
 
-# Run tests
+# Print version
+./bin/git-bridge -version
+
+# Run tests with race detection + coverage
 make test
+make cover          # HTML coverage report
 
-# Format & vet
-make fmt vet
+# Format, vet, lint
+make fmt
+make vet
+make lint           # auto-downloads golangci-lint to ./bin/
+make lint-fix
 
-# Docker build
+# Docker build (multi-arch via buildx)
 make docker-build
+make docker-buildx  # build + push linux/amd64,linux/arm64
+
+# Cross-compile binaries for linux/darwin × amd64/arm64 → dist/
+make cross-build
+```
+
+<br/>
+
+## Version Management
+
+```bash
+# Show current version across all files
+make version
+
+# Bump version across Makefile, Helm Chart.yaml, values.yaml, k8s/deployment.yaml, README.md
+make bump-version VERSION=v0.2.0
 ```
 
 <br/>
@@ -209,7 +232,7 @@ make docker-build
 
 <br/>
 
-### Kubernetes
+### Kubernetes (raw manifests)
 
 ```bash
 # 1. Create namespace
@@ -228,14 +251,57 @@ kubectl get pods -n git-bridge
 kubectl logs -n git-bridge -l app=git-bridge -f
 ```
 
+Or use the Makefile shortcut:
+
+```bash
+make deploy-k8s   # apply all manifests + wait for rollout
+make undeploy-k8s # remove all manifests
+```
+
+<br/>
+
+### Kubernetes (Helm chart)
+
+A Helm chart is available under [`helm/git-bridge`](helm/git-bridge) with examples for common scenarios.
+
+```bash
+# Install from local chart
+helm install git-bridge ./helm/git-bridge \
+  --namespace git-bridge --create-namespace \
+  -f helm/git-bridge/examples/default.yaml
+
+# Lint + template-test
+make test-helm
+```
+
+Available examples:
+
+- [`examples/default.yaml`](helm/git-bridge/examples/default.yaml) — CodeCommit → GitLab mirror with managed secret
+- [`examples/webhook-only.yaml`](helm/git-bridge/examples/webhook-only.yaml) — GitHub ↔ GitLab bidirectional via webhooks
+- [`examples/codecommit-multi-region.yaml`](helm/git-bridge/examples/codecommit-multi-region.yaml) — multi-region CodeCommit with external secret
+
+<br/>
+
+### Local (binary / Docker)
+
+```bash
+make deploy         # build + run ./bin/git-bridge with examples/config.yaml
+make deploy-smoke   # run hack/test-deploy.sh against localhost:8080
+make deploy-all     # deploy + smoke
+make undeploy
+
+make deploy-docker  # run the Docker image
+make undeploy-docker
+```
+
 <br/>
 
 ### Useful Commands
 
 ```bash
-make restart   # Restart deployment
+make restart   # Restart Kubernetes deployment
 make logs      # Tail pod logs
-make deploy    # Apply all k8s manifests
+make help      # Show all Makefile targets
 ```
 
 <br/>
@@ -317,6 +383,8 @@ Register it in `provider.New()`.
 
 | Document | Description |
 |----------|-------------|
+| [Development](docs/DEVELOPMENT.md) | Build, test, lint, Docker, Helm, local/K8s deploy, CI workflows |
+| [Version Management](docs/version.md) | Version locations, bump flow, release process |
 | [Naming Convention](docs/naming-convention.md) | Multi-provider naming convention guide |
 | [Advanced Config](docs/ADVANCE.md) | All provider combinations and detailed examples |
 | [API Reference](docs/API.md) | Endpoint request/response specifications |
