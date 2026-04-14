@@ -2,10 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased (2026-04-10)
+## [v0.4.0](https://github.com/somaz94/git-bridge/compare/v0.3.0...v0.4.0) (2026-04-14)
+
+### Features
+
+- **helm:** add helm chart for git-bridge ([4d92f5d](https://github.com/somaz94/git-bridge/commit/4d92f5d91a9c0f4262e6f1fd14a10cbddcc4c346))
+- **version:** add version package and -version flag ([7cd0aa9](https://github.com/somaz94/git-bridge/commit/7cd0aa95ade7dd44ca2a11b1079f0c77714699e7))
 
 ### Documentation
 
+- add version guide and refresh development docs ([bbd95d9](https://github.com/somaz94/git-bridge/commit/bbd95d9d3c5eaa9d5552952119bf398da5b9329c))
 - remove duplicate rules covered by global CLAUDE.md ([aaf3062](https://github.com/somaz94/git-bridge/commit/aaf306208cd7400fdc4215817f43a2652223be24))
 - add DEVELOPMENT.md ([940ac4d](https://github.com/somaz94/git-bridge/commit/940ac4d458fd655efa4c77a683eee52adeb0a2a5))
 
@@ -18,6 +24,9 @@ All notable changes to this project will be documented in this file.
 
 ### Continuous Integration
 
+- add lint and helm-release workflows with version build-args ([297efa0](https://github.com/somaz94/git-bridge/commit/297efa09badcdbc78774f614dd808dabca9dd59b))
+- restructure Makefile, Dockerfile, and hack scripts ([e157c39](https://github.com/somaz94/git-bridge/commit/e157c3909021ff266f63d7c11cd694b47353fed4))
+- add Docker build and push job to release workflow ([9c35281](https://github.com/somaz94/git-bridge/commit/9c352818b53e73c9518cd36858653b590bb90446))
 - skip auto-generated changelog and contributors commits in release notes ([2596fd7](https://github.com/somaz94/git-bridge/commit/2596fd772b9524818192e495810e566188cac397))
 - revert to body_path RELEASE.md in release workflow ([d81317d](https://github.com/somaz94/git-bridge/commit/d81317dcb8c7893b569a521900338e85d7937b5b))
 - use generate_release_notes instead of RELEASE.md ([d729059](https://github.com/somaz94/git-bridge/commit/d729059857512f9a05199643198af8525fe97049))
@@ -25,6 +34,7 @@ All notable changes to this project will be documented in this file.
 
 ### Chores
 
+- bump version to v0.4.0 ([846c48e](https://github.com/somaz94/git-bridge/commit/846c48ec8b6fef7be0ad985a8295cc9bead3dbb1))
 - remove duplicate rules from CLAUDE.md (moved to global) ([f7c0b51](https://github.com/somaz94/git-bridge/commit/f7c0b517d6dcd0a17b9d387c5e6c42404e8c52f9))
 - add git config protection to CLAUDE.md ([ea02f04](https://github.com/somaz94/git-bridge/commit/ea02f044456e2e392f8305da15df2cf450c55b46))
 - add workflow Makefile targets (check-gh, branch, pr) ([7239588](https://github.com/somaz94/git-bridge/commit/72395889b55d652473e8c3761117b8cd014e7f6c))
