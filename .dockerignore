@@ -1,31 +1,46 @@
-# Binary
+# Build and test binaries
 bin/
+dist/
 git-bridge
 
 # Coverage
 coverage.out
 coverage.html
 
-# Git
-.git
+# Version control
+.git/
 .gitignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Documentation
+docs/
+*.md
+LICENSE
+CODEOWNERS
+
+# Helm charts
+helm/
+
+# Kubernetes manifests
+k8s/
+
+# Scripts and tooling (not needed for binary build)
+hack/
+scripts/
 
 # IDE
 .idea/
 .vscode/
 
-# OS
-.DS_Store
+# Test files
+*_test.go
 
-# K8s manifests
-k8s/
-
-# Docs
-docs/
-README.md
+# Docker artifacts
+Dockerfile.cross
+.dockerignore
 
 # Config with secrets
 examples/config.local.yaml
-
-# CI
-.gitlab-ci.yml

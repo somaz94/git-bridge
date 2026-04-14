@@ -2,6 +2,12 @@
 bin/
 /git-bridge
 
+# Cross-build output
+dist/
+
+# Docker cross-build artifact
+Dockerfile.cross
+
 # Coverage
 coverage.out
 coverage.html
@@ -15,6 +21,13 @@ coverage.html
 *.test
 *.out
 vendor/
+
+# Go workspace
+go.work
+go.work.sum
+
+# env file
+.env
 
 # IDE
 .idea/
