@@ -1,5 +1,5 @@
 # Image URL to use all building/pushing image targets
-IMG ?= somaz940/git-bridge:v0.3.0
+IMG ?= somaz940/git-bridge:v0.4.0
 APP_NAME := git-bridge
 MODULE := git-bridge
 
