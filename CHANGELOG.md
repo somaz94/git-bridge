@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Builds
 
 - **deps:** Bump github.com/aws/aws-sdk-go-v2/config (#9) ([#9](https://github.com/somaz94/git-bridge/pull/9)) ([a618c6c](https://github.com/somaz94/git-bridge/commit/a618c6cc9b02b23512eff9c605a29c89bda2d03b))
+- **deps:** Bump docker/login-action from 3 to 4 ([98fd916](https://github.com/somaz94/git-bridge/commit/98fd9166b57e1535a932d44a2613c313a2648213))
 - **deps:** Bump docker/setup-qemu-action from 3 to 4 ([487e92a](https://github.com/somaz94/git-bridge/commit/487e92a3b8c41fa594e9443d3413091587b75d14))
 
 <br/>
