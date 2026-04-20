@@ -264,8 +264,28 @@ make undeploy-k8s # remove all manifests
 
 A Helm chart is available under [`helm/git-bridge`](helm/git-bridge) with examples for common scenarios.
 
+**Recommended: OCI registry (Helm 3.8+)**
+
 ```bash
-# Install from local chart
+helm install git-bridge oci://ghcr.io/somaz94/charts/git-bridge \
+  --version 0.4.0 \
+  --namespace git-bridge --create-namespace \
+  -f helm/git-bridge/examples/default.yaml
+```
+
+**Alternative: classic Helm repo**
+
+```bash
+helm repo add git-bridge https://somaz94.github.io/git-bridge/helm-repo
+helm repo update
+helm install git-bridge git-bridge/git-bridge \
+  --namespace git-bridge --create-namespace \
+  -f helm/git-bridge/examples/default.yaml
+```
+
+**Local chart (development)**
+
+```bash
 helm install git-bridge ./helm/git-bridge \
   --namespace git-bridge --create-namespace \
   -f helm/git-bridge/examples/default.yaml
