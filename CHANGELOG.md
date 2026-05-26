@@ -2,13 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased (2026-04-17)
+## [v0.5.0](https://github.com/somaz94/git-bridge/compare/v0.4.0...v0.5.0) (2026-05-26)
+
+### Features
+
+- add /retry/mirror API + per-repo Slack routing + retry_direction (v0.5.0) ([75757e9](https://github.com/somaz94/git-bridge/commit/75757e9bd65ca2d4d70d0613decbbb2d52a89b67))
+- **ci:** publish Helm chart to GHCR (OCI) alongside gh-pages ([325827d](https://github.com/somaz94/git-bridge/commit/325827d7f14781a5d08fa6e0e885ac6704ee6315))
+
+### Bug Fixes
+
+- **ci:** use staged tarball for OCI push (gh-pages branch checkout invalidates ./helm/ path) ([ace943b](https://github.com/somaz94/git-bridge/commit/ace943b00b51f1f4ebd8d2b76a46348a19ae463e))
 
 ### Builds
 
+- **deps:** Bump the go-minor group with 4 updates (#11) ([#11](https://github.com/somaz94/git-bridge/pull/11)) ([2ec917c](https://github.com/somaz94/git-bridge/commit/2ec917cf7089b8566478c9b3bdd30351f52adbea))
+- **deps:** Bump the go-minor group with 4 updates (#10) ([#10](https://github.com/somaz94/git-bridge/pull/10)) ([e84f5b7](https://github.com/somaz94/git-bridge/commit/e84f5b7046dccefe8f5ace255a430b61b2b96100))
 - **deps:** Bump github.com/aws/aws-sdk-go-v2/config (#9) ([#9](https://github.com/somaz94/git-bridge/pull/9)) ([a618c6c](https://github.com/somaz94/git-bridge/commit/a618c6cc9b02b23512eff9c605a29c89bda2d03b))
 - **deps:** Bump docker/login-action from 3 to 4 ([98fd916](https://github.com/somaz94/git-bridge/commit/98fd9166b57e1535a932d44a2613c313a2648213))
 - **deps:** Bump docker/setup-qemu-action from 3 to 4 ([487e92a](https://github.com/somaz94/git-bridge/commit/487e92a3b8c41fa594e9443d3413091587b75d14))
+
+### Continuous Integration
+
+- use helm-chart-release-action@v1 (replace inline release script) ([86351e2](https://github.com/somaz94/git-bridge/commit/86351e2b7a0b5936b7e427f271ea7804f282ca2b))
+
+### Contributors
+
+- somaz
 
 <br/>
 
