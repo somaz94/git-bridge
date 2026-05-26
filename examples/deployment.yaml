@@ -37,7 +37,7 @@ spec:
       #   - name: registry-secret
       containers:
         - name: git-bridge
-          image: somaz940/git-bridge:latest
+          image: your-registry/git-bridge:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
@@ -188,6 +188,15 @@ spec:
                   key: WEBHOOK_GITHUB_SECRET
 
             # -----------------------------------------------------------------
+            # Retry API
+            # -----------------------------------------------------------------
+            - name: RETRY_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: git-bridge-secret
+                  key: RETRY_API_TOKEN
+
+            # -----------------------------------------------------------------
             # Notification
             # -----------------------------------------------------------------
             - name: SLACK_WEBHOOK_URL
@@ -195,6 +204,14 @@ spec:
                 secretKeyRef:
                   name: git-bridge-secret
                   key: SLACK_WEBHOOK_URL
+            # Optional: per-repo Slack channels — referenced by repos that carry
+            # `slack_webhook_url: "${<REPO>_SLACK_WEBHOOK_URL}"` in config.yaml
+            - name: GIT_BRIDGE_TEST_SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: git-bridge-secret
+                  key: GIT_BRIDGE_TEST_SLACK_WEBHOOK_URL
+                  optional: true
           volumeMounts:
             - name: config
               mountPath: /etc/git-bridge

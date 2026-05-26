@@ -14,10 +14,16 @@ import (
 const httpTimeout = 10 * time.Second
 
 // Message represents a notification message.
+//
+// WebhookURL is an optional per-message override — when set, Slack.Send routes
+// the message to that URL instead of the notifier's configured default. Used
+// for per-repo Slack channel routing (e.g. git-bridge-test → TEST channel,
+// other repos → prod channel).
 type Message struct {
-	Level string // success, error, warning
-	Title string
-	Body  string
+	Level      string // success, error, warning
+	Title      string
+	Body       string
+	WebhookURL string // optional override; empty = use notifier default
 }
 
 // Notifier sends notifications.
@@ -60,7 +66,11 @@ func (s *Slack) Send(msg Message) {
 		slog.Error("slack notification marshal failed", "error", err)
 		return
 	}
-	resp, err := s.client.Post(s.webhookURL, "application/json", bytes.NewReader(body))
+	url := s.webhookURL
+	if msg.WebhookURL != "" {
+		url = msg.WebhookURL
+	}
+	resp, err := s.client.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		slog.Error("slack notification failed", "error", err)
 		return
@@ -75,5 +85,5 @@ func (s *Slack) Send(msg Message) {
 // Noop is a no-op notifier (when Slack is not configured).
 type Noop struct{}
 
-func NewNoop() *Noop       { return &Noop{} }
+func NewNoop() *Noop           { return &Noop{} }
 func (n *Noop) Send(_ Message) {}

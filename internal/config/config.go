@@ -13,9 +13,10 @@ type Config struct {
 	Mirror       MirrorConfig              `yaml:"mirror"`
 	Providers    map[string]ProviderConfig `yaml:"providers"`
 	Repos        []RepoConfig              `yaml:"repos"`
-	Consumer     ConsumerConfig            `yaml:"consumer"`     // legacy single consumer (backward compat)
-	Consumers    []ConsumerConfig          `yaml:"consumers"`    // multiple consumers
+	Consumer     ConsumerConfig            `yaml:"consumer"`  // legacy single consumer (backward compat)
+	Consumers    []ConsumerConfig          `yaml:"consumers"` // multiple consumers
 	Webhook      WebhookConfig             `yaml:"webhook"`
+	Retry        RetryConfig               `yaml:"retry"`
 	Notification NotificationConfig        `yaml:"notification"`
 }
 
@@ -35,19 +36,21 @@ type ProviderConfig struct {
 }
 
 type RepoConfig struct {
-	Name       string `yaml:"name"`
-	Source     string `yaml:"source"`      // provider name
-	Target     string `yaml:"target"`      // provider name
-	SourcePath string `yaml:"source_path"` // repo path on source
-	TargetPath string `yaml:"target_path"` // repo path on target
-	Direction  string `yaml:"direction"`   // source-to-target, target-to-source, bidirectional
+	Name            string `yaml:"name"`
+	Source          string `yaml:"source"`            // provider name
+	Target          string `yaml:"target"`            // provider name
+	SourcePath      string `yaml:"source_path"`       // repo path on source
+	TargetPath      string `yaml:"target_path"`       // repo path on target
+	Direction       string `yaml:"direction"`         // source-to-target, target-to-source, bidirectional
+	RetryDirection  string `yaml:"retry_direction"`   // override for retry "auto" on bidirectional repos: source-to-target / target-to-source. empty = built-in fallback (target-to-source)
+	SlackWebhookURL string `yaml:"slack_webhook_url"` // per-repo override; empty falls back to notification.slack.webhook_url
 }
 
 type ConsumerConfig struct {
-	Name     string `yaml:"name"`     // consumer name (for logging)
-	Type     string `yaml:"type"`     // sqs
-	QueueURL string `yaml:"queue_url"`
-	Region   string `yaml:"region"`
+	Name        string `yaml:"name"` // consumer name (for logging)
+	Type        string `yaml:"type"` // sqs
+	QueueURL    string `yaml:"queue_url"`
+	Region      string `yaml:"region"`
 	Credentials struct {
 		AccessKey string `yaml:"access_key"`
 		SecretKey string `yaml:"secret_key"`
@@ -57,6 +60,12 @@ type ConsumerConfig struct {
 type WebhookConfig struct {
 	GitLabSecret string `yaml:"gitlab_secret"` // X-Gitlab-Token verification
 	GitHubSecret string `yaml:"github_secret"` // GitHub webhook secret
+}
+
+// RetryConfig holds settings for the manual retry HTTP endpoint.
+// Empty APIToken disables the endpoint (handler returns 404).
+type RetryConfig struct {
+	APIToken string `yaml:"api_token"` // Bearer token; empty disables /retry/mirror
 }
 
 type NotificationConfig struct {
@@ -130,6 +139,17 @@ func validate(cfg *Config) error {
 		dir := strings.ToLower(r.Direction)
 		if dir != "source-to-target" && dir != "target-to-source" && dir != "bidirectional" {
 			return fmt.Errorf("repo[%d] %s: direction must be source-to-target, target-to-source, or bidirectional", i, r.Name)
+		}
+		// retry_direction is optional; only validated when set.
+		if r.RetryDirection != "" {
+			rd := strings.ToLower(r.RetryDirection)
+			if rd != "source-to-target" && rd != "target-to-source" {
+				return fmt.Errorf("repo[%d] %s: retry_direction must be source-to-target or target-to-source (got %q)", i, r.Name, r.RetryDirection)
+			}
+			// On one-way repos retry_direction must match the repo's direction.
+			if dir != "bidirectional" && rd != dir {
+				return fmt.Errorf("repo[%d] %s: retry_direction %q conflicts with one-way direction %q", i, r.Name, r.RetryDirection, r.Direction)
+			}
 		}
 	}
 	// Merge legacy single consumer into consumers list (backward compat)

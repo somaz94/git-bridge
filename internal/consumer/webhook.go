@@ -24,8 +24,8 @@ type Mirrorer interface {
 
 // GitLabPushEvent represents a GitLab push webhook payload.
 type GitLabPushEvent struct {
-	EventName string `json:"event_name"`
-	UserName  string `json:"user_name"`
+	EventName  string `json:"event_name"`
+	UserName   string `json:"user_name"`
 	Repository struct {
 		Name string `json:"name"`
 	} `json:"repository"`

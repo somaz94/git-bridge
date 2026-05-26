@@ -79,23 +79,37 @@ data:
     #   source-to-target  — source → target (one-way)
     #   target-to-source  — target → source (one-way, requires target webhook)
     #   bidirectional     — both directions (requires target webhook)
+    #
+    # retry_direction: optional override for retry "auto" resolution on a
+    # bidirectional repo. Accepts source-to-target or target-to-source. When
+    # unset, "auto" falls back to target-to-source (the 2026-05-19 incident
+    # pattern). Explicit direction in the API call always wins over this pin.
+    #
+    # slack_webhook_url: optional per-repo override. When set, all Slack
+    # notifications for this repo (webhook + sqs + retry-api triggered) are
+    # routed to this URL instead of notification.slack.webhook_url. Useful for
+    # sending test-repo traffic to a separate test channel.
     # =========================================================================
     repos:
-      # CodeCommit(EU) → GitLab (one-way)
+      # CodeCommit(EU) → GitLab (one-way) — routes notifications to a repo-specific channel
       - name: git-bridge-test
         source: codecommit-eu
         target: gitlab-main
         source_path: git-bridge-test
         target_path: server/git-bridge-test
         direction: source-to-target
+        # retry_direction: source-to-target   # (optional; on one-way repos must match `direction`)
+        slack_webhook_url: "${GIT_BRIDGE_TEST_SLACK_WEBHOOK_URL}"  # empty/unset = fallback to default
 
-      # CodeCommit(EU) ↔ GitLab (bidirectional)
+      # CodeCommit(EU) ↔ GitLab (bidirectional) — retry_direction pins the
+      # "auto" direction for the manual retry API (operator preference).
       - name: web-app
         source: codecommit-eu
         target: gitlab-main
         source_path: web-app
         target_path: frontend/web-app
         direction: bidirectional
+        retry_direction: target-to-source
 
       # GitLab → GitHub (one-way, different provider pair)
       - name: open-source-lib
@@ -144,6 +158,9 @@ data:
     webhook:
       gitlab_secret: "${WEBHOOK_GITLAB_SECRET}"           # empty = skip verification
       github_secret: "${WEBHOOK_GITHUB_SECRET}"           # empty = skip verification
+
+    retry:
+      api_token: "${RETRY_API_TOKEN}"                     # empty = endpoint disabled (404)
 
     notification:
       slack:

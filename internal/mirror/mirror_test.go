@@ -16,16 +16,16 @@ import (
 
 // mockGitRunner records calls and returns configurable errors.
 type mockGitRunner struct {
-	cloneCalls     []cloneCall
-	fetchCalls     []fetchCall
-	pushCalls      []pushCall
-	deleteRefCalls []deleteRefCall
-	cloneErr       error
-	fetchErr       error
-	pushErr        error
-	pushChanged    bool // when true, PushMirror reports changes were pushed
-	deleteRefErr   error
-	commitAuthor   string // return value for CommitAuthor
+	cloneCalls      []cloneCall
+	fetchCalls      []fetchCall
+	pushCalls       []pushCall
+	deleteRefCalls  []deleteRefCall
+	cloneErr        error
+	fetchErr        error
+	pushErr         error
+	pushChanged     bool // when true, PushMirror reports changes were pushed
+	deleteRefErr    error
+	commitAuthor    string // return value for CommitAuthor
 	commitAuthorErr error
 }
 
@@ -1049,6 +1049,46 @@ func TestDoMirror_InitialClone(t *testing.T) {
 	}
 }
 
+func TestDefaultGitRunner_CommitAuthor(t *testing.T) {
+	// Create a repo with a commit by a known author.
+	srcDir := t.TempDir()
+	runGit(t, srcDir, "init")
+	runGit(t, srcDir, "config", "user.email", "alice@example.com")
+	runGit(t, srcDir, "config", "user.name", "Alice")
+	writeFile(t, srcDir+"/file.txt", "hello")
+	runGit(t, srcDir, "add", ".")
+	runGit(t, srcDir, "commit", "-m", "init")
+
+	// Mirror-clone so we have a bare repo to query against (matches doMirror layout).
+	mirrorDir := t.TempDir() + "/mirror.git"
+	runner := &defaultGitRunner{}
+	if err := runner.CloneMirror(context.Background(), srcDir, mirrorDir); err != nil {
+		t.Fatalf("CloneMirror failed: %v", err)
+	}
+
+	// HEAD on a freshly-cloned bare mirror should resolve to the latest commit
+	// authored by Alice.
+	author, err := runner.CommitAuthor(context.Background(), mirrorDir, "HEAD")
+	if err != nil {
+		t.Fatalf("CommitAuthor failed: %v", err)
+	}
+	if author != "Alice" {
+		t.Errorf("author = %q, want Alice", author)
+	}
+}
+
+func TestDefaultGitRunner_CommitAuthor_BadRef(t *testing.T) {
+	// Invalid ref → error path (covers the failure branch).
+	srcDir := t.TempDir()
+	runGit(t, srcDir, "init", "--bare")
+
+	runner := &defaultGitRunner{}
+	_, err := runner.CommitAuthor(context.Background(), srcDir, "refs/heads/does-not-exist")
+	if err == nil {
+		t.Fatal("expected error for nonexistent ref")
+	}
+}
+
 func TestDefaultGitRunner_FetchMirror(t *testing.T) {
 	// Create source with a commit
 	srcDir := t.TempDir()
@@ -1325,6 +1365,343 @@ func TestEventMeta_IsTag(t *testing.T) {
 	}
 	if (EventMeta{Ref: "refs/heads/main"}).IsTag() {
 		t.Error("expected IsTag() false for refs/heads/main")
+	}
+}
+
+// --- Per-repo Slack webhook URL override tests ---
+
+// urlCapturingNotifier records the WebhookURL field of every message sent.
+type urlCapturingNotifier struct {
+	urls []string
+}
+
+func (n *urlCapturingNotifier) Send(msg notify.Message) {
+	n.urls = append(n.urls, msg.WebhookURL)
+}
+
+func TestDoMirror_PropagatesRepoSlackWebhookURL(t *testing.T) {
+	git := &mockGitRunner{pushChanged: true}
+	notif := &urlCapturingNotifier{}
+	svc := newTestService(nil, makeProviders(), notif, git)
+
+	repoCfg := config.RepoConfig{Name: "test-repo", SlackWebhookURL: "https://hooks.slack.test/TESTURL"}
+	err := svc.doMirror(context.Background(), repoCfg, "codecommit-eu", "src", "gitlab-main", "team/dst", EventMeta{Ref: "refs/heads/main"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(notif.urls) != 1 || notif.urls[0] != "https://hooks.slack.test/TESTURL" {
+		t.Errorf("expected webhook URL to be propagated from RepoConfig, got %v", notif.urls)
+	}
+}
+
+func TestDoMirror_EmptySlackWebhookURL_LeavesOverrideEmpty(t *testing.T) {
+	// When RepoConfig.SlackWebhookURL is empty, the Message.WebhookURL field stays
+	// empty — Slack.Send then falls back to the notifier's default URL.
+	git := &mockGitRunner{pushChanged: true}
+	notif := &urlCapturingNotifier{}
+	svc := newTestService(nil, makeProviders(), notif, git)
+
+	repoCfg := config.RepoConfig{Name: "test-repo"} // no SlackWebhookURL
+	err := svc.doMirror(context.Background(), repoCfg, "codecommit-eu", "src", "gitlab-main", "team/dst", EventMeta{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(notif.urls) != 1 || notif.urls[0] != "" {
+		t.Errorf("expected empty webhook URL when RepoConfig has none, got %v", notif.urls)
+	}
+}
+
+func TestDoMirror_FailureNotification_PropagatesSlackWebhookURL(t *testing.T) {
+	git := &mockGitRunner{cloneErr: fmt.Errorf("clone failed")}
+	notif := &urlCapturingNotifier{}
+	svc := newTestService(nil, makeProviders(), notif, git)
+
+	repoCfg := config.RepoConfig{Name: "test-repo", SlackWebhookURL: "https://hooks.slack.test/FAILURL"}
+	_ = svc.doMirror(context.Background(), repoCfg, "codecommit-eu", "src", "gitlab-main", "team/dst", EventMeta{})
+
+	if len(notif.urls) != 1 || notif.urls[0] != "https://hooks.slack.test/FAILURL" {
+		t.Errorf("failure notification should carry the override URL, got %v", notif.urls)
+	}
+}
+
+// --- Retry tests ---
+
+func TestRetry_SourceToTarget_Explicit(t *testing.T) {
+	git := &mockGitRunner{pushChanged: true}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	err := svc.Retry(context.Background(), "my-repo", "source-to-target", EventMeta{Source: "retry-api"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(git.cloneCalls) != 1 {
+		t.Errorf("expected 1 clone call, got %d", len(git.cloneCalls))
+	}
+	if len(notif.messages) != 1 || notif.messages[0].Level != "success" {
+		t.Fatalf("expected success notification, got %+v", notif.messages)
+	}
+	if !strings.Contains(notif.messages[0].Body, "Source: retry-api") {
+		t.Errorf("expected body to contain 'Source: retry-api', got %q", notif.messages[0].Body)
+	}
+}
+
+func TestRetry_TargetToSource_Explicit(t *testing.T) {
+	git := &mockGitRunner{pushChanged: true}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	err := svc.Retry(context.Background(), "reverse-repo", "target-to-source", EventMeta{Source: "retry-api"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(git.cloneCalls) != 1 {
+		t.Errorf("expected 1 clone call, got %d", len(git.cloneCalls))
+	}
+}
+
+func TestRetry_Auto_Bidirectional_FallsBackToTargetToSource(t *testing.T) {
+	git := &mockGitRunner{pushChanged: true}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	// bidi-repo: source=codecommit-eu, target=gitlab-main, direction=bidirectional
+	err := svc.Retry(context.Background(), "bidi-repo", "auto", EventMeta{Source: "retry-api"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// auto on bidirectional should pick target-to-source, i.e. clone from gitlab.
+	if len(git.cloneCalls) != 1 {
+		t.Fatalf("expected 1 clone call, got %d", len(git.cloneCalls))
+	}
+	cloneURL := git.cloneCalls[0].URL
+	if !strings.Contains(cloneURL, "gitlab") {
+		t.Errorf("expected clone URL to come from gitlab (target), got %q", cloneURL)
+	}
+}
+
+func TestRetry_Auto_UsesRepoRetryDirectionOverride(t *testing.T) {
+	// bidi-repo with retry_direction="source-to-target" (operator override) →
+	// auto must pick source-to-target, NOT the built-in target-to-source fallback.
+	git := &mockGitRunner{pushChanged: true}
+	notif := &mockNotifier{}
+	repos := defaultRepos()
+	for i := range repos {
+		if repos[i].Name == "bidi-repo" {
+			repos[i].RetryDirection = "source-to-target"
+		}
+	}
+	svc := newTestService(repos, makeProviders(), notif, git)
+
+	err := svc.Retry(context.Background(), "bidi-repo", "auto", EventMeta{Source: "retry-api"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cloneURL := git.cloneCalls[0].URL
+	// Source provider is codecommit, target is gitlab.example.com — under
+	// source-to-target the clone must come from codecommit (no gitlab in URL).
+	if strings.Contains(cloneURL, "gitlab.example.com") {
+		t.Errorf("retry_direction override should clone from source (codecommit), got %q", cloneURL)
+	}
+}
+
+func TestRetry_Auto_RetryDirectionOverridesFallback(t *testing.T) {
+	// Even when retry_direction equals the built-in fallback for that repo
+	// (target-to-source), the override path must still be taken (gives operator
+	// confidence that the configured value drives behavior).
+	git := &mockGitRunner{pushChanged: true}
+	notif := &mockNotifier{}
+	repos := defaultRepos()
+	for i := range repos {
+		if repos[i].Name == "bidi-repo" {
+			repos[i].RetryDirection = "target-to-source"
+		}
+	}
+	svc := newTestService(repos, makeProviders(), notif, git)
+
+	err := svc.Retry(context.Background(), "bidi-repo", "auto", EventMeta{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cloneURL := git.cloneCalls[0].URL
+	if !strings.Contains(cloneURL, "gitlab") {
+		t.Errorf("expected target-to-source (clone from gitlab), got %q", cloneURL)
+	}
+}
+
+func TestRetry_ExplicitDirection_IgnoresRepoRetryDirection(t *testing.T) {
+	// Explicit direction in the API call wins over repo's retry_direction.
+	git := &mockGitRunner{pushChanged: true}
+	notif := &mockNotifier{}
+	repos := defaultRepos()
+	for i := range repos {
+		if repos[i].Name == "bidi-repo" {
+			repos[i].RetryDirection = "source-to-target"
+		}
+	}
+	svc := newTestService(repos, makeProviders(), notif, git)
+
+	// API call requests target-to-source — should override repo's pin.
+	err := svc.Retry(context.Background(), "bidi-repo", "target-to-source", EventMeta{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cloneURL := git.cloneCalls[0].URL
+	if !strings.Contains(cloneURL, "gitlab") {
+		t.Errorf("explicit direction should win over retry_direction, expected clone from gitlab, got %q", cloneURL)
+	}
+}
+
+func TestRetry_Auto_OneWay_UsesAllowedDirection(t *testing.T) {
+	git := &mockGitRunner{pushChanged: true}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	// my-repo: source-to-target only — auto must resolve to source-to-target.
+	err := svc.Retry(context.Background(), "my-repo", "auto", EventMeta{Source: "retry-api"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cloneURL := git.cloneCalls[0].URL
+	// source provider is codecommit-eu — its URL should appear in the clone call.
+	if strings.Contains(cloneURL, "gitlab.example.com") {
+		t.Errorf("auto on one-way source-to-target should clone from source (codecommit), got %q", cloneURL)
+	}
+}
+
+func TestRetry_EmptyDirection_DefaultsToAuto(t *testing.T) {
+	git := &mockGitRunner{pushChanged: true}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	// empty direction should behave the same as "auto" — for my-repo, that's source-to-target.
+	err := svc.Retry(context.Background(), "my-repo", "", EventMeta{Source: "retry-api"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(git.cloneCalls) != 1 {
+		t.Fatalf("expected 1 clone call, got %d", len(git.cloneCalls))
+	}
+}
+
+func TestRetry_ConflictDirection_OneWayRepo(t *testing.T) {
+	git := &mockGitRunner{}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	// my-repo is source-to-target only; requesting target-to-source must fail.
+	err := svc.Retry(context.Background(), "my-repo", "target-to-source", EventMeta{Source: "retry-api"})
+	if err == nil {
+		t.Fatal("expected error for conflicting direction")
+	}
+	if len(git.cloneCalls) != 0 {
+		t.Errorf("expected no clone calls, got %d", len(git.cloneCalls))
+	}
+}
+
+func TestRetry_UnknownRepo(t *testing.T) {
+	git := &mockGitRunner{}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	err := svc.Retry(context.Background(), "no-such-repo", "auto", EventMeta{})
+	if err == nil {
+		t.Fatal("expected error for unknown repo")
+	}
+}
+
+func TestRetry_InvalidDirectionAfterAuto(t *testing.T) {
+	git := &mockGitRunner{}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	// "sideways" passes the lookup but fails the switch — directionAllowed returns false first.
+	err := svc.Retry(context.Background(), "bidi-repo", "sideways", EventMeta{})
+	if err == nil {
+		t.Fatal("expected error for invalid direction string")
+	}
+}
+
+func TestResolveAutoDirection(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"bidirectional", "target-to-source"},
+		{"Bidirectional", "target-to-source"},
+		{"source-to-target", "source-to-target"},
+		{"target-to-source", "target-to-source"},
+		{"unknown", "target-to-source"}, // safe default
+		{"", "target-to-source"},
+	}
+	for _, tt := range tests {
+		if got := resolveAutoDirection(tt.in); got != tt.want {
+			t.Errorf("resolveAutoDirection(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestDirectionAllowed(t *testing.T) {
+	tests := []struct {
+		cfgDir   string
+		retryDir string
+		want     bool
+	}{
+		{"bidirectional", "source-to-target", true},
+		{"bidirectional", "target-to-source", true},
+		{"source-to-target", "source-to-target", true},
+		{"source-to-target", "target-to-source", false},
+		{"target-to-source", "target-to-source", true},
+		{"target-to-source", "source-to-target", false},
+		{"Source-To-Target", "source-to-target", true},
+	}
+	for _, tt := range tests {
+		if got := directionAllowed(tt.cfgDir, tt.retryDir); got != tt.want {
+			t.Errorf("directionAllowed(%q, %q) = %v, want %v", tt.cfgDir, tt.retryDir, got, tt.want)
+		}
+	}
+}
+
+func TestAppendSource(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   string
+		source string
+		want   string
+	}{
+		{"empty source", "Action: push", "", "Action: push"},
+		{"webhook source", "Action: push", "webhook", "Action: push"},
+		{"retry-api source", "Action: push", "retry-api", "Action: push\nSource: retry-api"},
+		{"sqs source", "Action: clone", "sqs", "Action: clone\nSource: sqs"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := appendSource(tt.body, EventMeta{Source: tt.source})
+			if got != tt.want {
+				t.Errorf("appendSource() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRetry_FailureNotification_IncludesSource(t *testing.T) {
+	git := &mockGitRunner{cloneErr: fmt.Errorf("network down")}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	err := svc.Retry(context.Background(), "my-repo", "auto", EventMeta{Source: "retry-api"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if len(notif.messages) != 1 || notif.messages[0].Level != "error" {
+		t.Fatalf("expected error notification, got %+v", notif.messages)
+	}
+	if !strings.Contains(notif.messages[0].Body, "Source: retry-api") {
+		t.Errorf("failure body should include 'Source: retry-api', got %q", notif.messages[0].Body)
 	}
 }
 

@@ -21,7 +21,8 @@ const defaultWorkDir = "/tmp/git-bridge"
 
 // EventMeta carries webhook/event metadata through the sync pipeline.
 type EventMeta struct {
-	Ref string // full ref (e.g. "refs/heads/main", "refs/tags/v1.0.0")
+	Ref    string // full ref (e.g. "refs/heads/main", "refs/tags/v1.0.0")
+	Source string // trigger origin: "webhook", "sqs", "retry-api". empty = webhook
 }
 
 // RefName returns the short ref name (e.g. "main", "v1.0.0").
@@ -167,7 +168,6 @@ func (d *defaultGitRunner) DeleteRef(ctx context.Context, workDir, url, refType,
 	return nil
 }
 
-
 // isGitDir returns true if dir exists and looks like a bare git repository.
 func isGitDir(dir string) bool {
 	info, err := os.Stat(filepath.Join(dir, "HEAD"))
@@ -261,6 +261,98 @@ func (s *Service) SyncByTarget(ctx context.Context, providerName, repoPath strin
 	return fmt.Errorf("no matching repo for provider=%q path=%q", providerName, repoPath)
 }
 
+// Retry runs a manual mirror sync triggered by the retry API.
+// repoName is matched against RepoConfig.Name. direction is one of
+// "source-to-target", "target-to-source", "auto", or "" (= "auto").
+//
+// "auto" fallback:
+//   - bidirectional repo → target-to-source (2026-05-19 incident pattern)
+//   - one-way repo      → the allowed single direction
+//
+// An explicit direction that conflicts with the repo's configured Direction
+// returns an error (e.g. requesting source-to-target on a target-to-source repo).
+func (s *Service) Retry(ctx context.Context, repoName, direction string, meta EventMeta) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.timeoutSeconds)*time.Second)
+	defer cancel()
+
+	var repoCfg *config.RepoConfig
+	for i := range s.configs {
+		if s.configs[i].Name == repoName {
+			repoCfg = &s.configs[i]
+			break
+		}
+	}
+	if repoCfg == nil {
+		return fmt.Errorf("repo %q not configured", repoName)
+	}
+
+	dir := strings.ToLower(strings.TrimSpace(direction))
+	if dir == "" || dir == "auto" {
+		// "auto" resolution order:
+		//   1. repo's explicit retry_direction (operator-pinned)
+		//   2. built-in fallback by repo.Direction (bidirectional → target-to-source)
+		if repoCfg.RetryDirection != "" {
+			dir = strings.ToLower(repoCfg.RetryDirection)
+		} else {
+			dir = resolveAutoDirection(repoCfg.Direction)
+		}
+	}
+	if !directionAllowed(repoCfg.Direction, dir) {
+		return fmt.Errorf("repo %q direction %q does not allow retry direction %q",
+			repoName, repoCfg.Direction, dir)
+	}
+
+	switch dir {
+	case "source-to-target":
+		return s.doMirror(ctx, *repoCfg, repoCfg.Source, repoCfg.SourcePath,
+			repoCfg.Target, repoCfg.TargetPath, meta)
+	case "target-to-source":
+		return s.doMirror(ctx, *repoCfg, repoCfg.Target, repoCfg.TargetPath,
+			repoCfg.Source, repoCfg.SourcePath, meta)
+	}
+	return fmt.Errorf("unknown retry direction %q", dir)
+}
+
+// resolveAutoDirection picks the default direction when retry direction is "auto".
+// bidirectional → target-to-source (matches the 2026-05-19 incident pattern, where
+// the GitLab → CodeCommit leg failed and manual retry was issued in that direction).
+// one-way repos resolve to their single allowed direction.
+func resolveAutoDirection(cfgDir string) string {
+	switch strings.ToLower(cfgDir) {
+	case "bidirectional":
+		return "target-to-source"
+	case "source-to-target":
+		return "source-to-target"
+	case "target-to-source":
+		return "target-to-source"
+	}
+	// Unreachable in practice — config.validate() restricts Direction to the
+	// three values above. Kept as a defensive default so a future code path
+	// that bypasses validate() still produces a sane (refused-by-
+	// directionAllowed) result instead of an empty direction string.
+	return "target-to-source"
+}
+
+// directionAllowed reports whether retryDir is compatible with the repo's
+// configured direction. bidirectional accepts any; one-way accepts only itself.
+func directionAllowed(cfgDir, retryDir string) bool {
+	cfg := strings.ToLower(cfgDir)
+	if cfg == "bidirectional" {
+		return true
+	}
+	return cfg == strings.ToLower(retryDir)
+}
+
+// appendSource appends a "Source: <name>" line to a Slack notification body
+// when the trigger source is non-webhook (e.g. "retry-api"). Webhook (the
+// default trigger) is left implicit to avoid noise on routine sync messages.
+func appendSource(body string, meta EventMeta) string {
+	if meta.Source == "" || meta.Source == "webhook" {
+		return body
+	}
+	return body + fmt.Sprintf("\nSource: %s", meta.Source)
+}
+
 // SyncDelete deletes a ref from the target triggered by source-side delete event.
 func (s *Service) SyncDelete(ctx context.Context, repoName, refType, refName string) error {
 	for _, repoCfg := range s.configs {
@@ -311,18 +403,20 @@ func (s *Service) doDeleteRef(ctx context.Context, repoCfg config.RepoConfig, to
 	logger.Info("deleting ref from target")
 	if err := s.git.DeleteRef(ctx, deleteDir, tgtURL, refType, refName); err != nil {
 		s.notifier.Send(notify.Message{
-			Level: "error",
-			Title: fmt.Sprintf("Ref Delete Failed: %s", repoCfg.Name),
-			Body:  fmt.Sprintf("Action: delete %s '%s'\nTarget: %s/%s\nError: %v", refType, refName, tgt.Type(), toPath, err),
+			Level:      "error",
+			Title:      fmt.Sprintf("Ref Delete Failed: %s", repoCfg.Name),
+			Body:       fmt.Sprintf("Action: delete %s '%s'\nTarget: %s/%s\nError: %v", refType, refName, tgt.Type(), toPath, err),
+			WebhookURL: repoCfg.SlackWebhookURL,
 		})
 		return fmt.Errorf("delete ref: %w", err)
 	}
 
 	logger.Info("ref deleted from target")
 	s.notifier.Send(notify.Message{
-		Level: "success",
-		Title: fmt.Sprintf("Ref Deleted: %s", repoCfg.Name),
-		Body:  fmt.Sprintf("Action: delete %s '%s'\nTarget: %s/%s\nURL: %s", refType, refName, tgt.Type(), toPath, tgt.WebURL(toPath)),
+		Level:      "success",
+		Title:      fmt.Sprintf("Ref Deleted: %s", repoCfg.Name),
+		Body:       fmt.Sprintf("Action: delete %s '%s'\nTarget: %s/%s\nURL: %s", refType, refName, tgt.Type(), toPath, tgt.WebURL(toPath)),
+		WebhookURL: repoCfg.SlackWebhookURL,
 	})
 	return nil
 }
@@ -363,9 +457,10 @@ func (s *Service) doMirror(ctx context.Context, repoCfg config.RepoConfig, fromP
 			logger.Warn("incremental fetch failed, falling back to full clone", "error", err)
 			if err := s.git.CloneMirror(ctx, srcURL, mirrorDir); err != nil {
 				s.notifier.Send(notify.Message{
-					Level: "error",
-					Title: fmt.Sprintf("Mirror Sync Failed: %s", repoCfg.Name),
-					Body:  fmt.Sprintf("Action: clone (fallback)\nRoute: %s\nError: %v", route, err),
+					Level:      "error",
+					Title:      fmt.Sprintf("Mirror Sync Failed: %s", repoCfg.Name),
+					Body:       appendSource(fmt.Sprintf("Action: clone (fallback)\nRoute: %s\nError: %v", route, err), meta),
+					WebhookURL: repoCfg.SlackWebhookURL,
 				})
 				return fmt.Errorf("clone: %w", err)
 			}
@@ -374,9 +469,10 @@ func (s *Service) doMirror(ctx context.Context, repoCfg config.RepoConfig, fromP
 		logger.Info("cloning from source (initial)")
 		if err := s.git.CloneMirror(ctx, srcURL, mirrorDir); err != nil {
 			s.notifier.Send(notify.Message{
-				Level: "error",
-				Title: fmt.Sprintf("Mirror Sync Failed: %s", repoCfg.Name),
-				Body:  fmt.Sprintf("Action: clone\nRoute: %s\nError: %v", route, err),
+				Level:      "error",
+				Title:      fmt.Sprintf("Mirror Sync Failed: %s", repoCfg.Name),
+				Body:       appendSource(fmt.Sprintf("Action: clone\nRoute: %s\nError: %v", route, err), meta),
+				WebhookURL: repoCfg.SlackWebhookURL,
 			})
 			return fmt.Errorf("clone: %w", err)
 		}
@@ -387,9 +483,10 @@ func (s *Service) doMirror(ctx context.Context, repoCfg config.RepoConfig, fromP
 	changed, err := s.git.PushMirror(ctx, mirrorDir, tgtURL)
 	if err != nil {
 		s.notifier.Send(notify.Message{
-			Level: "error",
-			Title: fmt.Sprintf("Mirror Sync Failed: %s", repoCfg.Name),
-			Body:  fmt.Sprintf("Action: push\nRoute: %s\nError: %v", route, err),
+			Level:      "error",
+			Title:      fmt.Sprintf("Mirror Sync Failed: %s", repoCfg.Name),
+			Body:       appendSource(fmt.Sprintf("Action: push\nRoute: %s\nError: %v", route, err), meta),
+			WebhookURL: repoCfg.SlackWebhookURL,
 		})
 		return fmt.Errorf("push: %w", err)
 	}
@@ -420,11 +517,11 @@ func (s *Service) doMirror(ctx context.Context, repoCfg config.RepoConfig, fromP
 	}
 
 	s.notifier.Send(notify.Message{
-		Level: "success",
-		Title: fmt.Sprintf("Mirror Sync: %s", repoCfg.Name),
-		Body:  body,
+		Level:      "success",
+		Title:      fmt.Sprintf("Mirror Sync: %s", repoCfg.Name),
+		Body:       appendSource(body, meta),
+		WebhookURL: repoCfg.SlackWebhookURL,
 	})
 
 	return nil
 }
-

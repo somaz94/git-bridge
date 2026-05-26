@@ -8,11 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"git-bridge/internal/mirror"
 	"time"
 
 	"git-bridge/internal/consumer"
+	"git-bridge/internal/mirror"
 )
 
 func TestHealthHandler(t *testing.T) {
@@ -50,7 +49,7 @@ func TestHealthHandler_ContentType(t *testing.T) {
 }
 
 func TestNewMux_NilWebhook(t *testing.T) {
-	mux := NewMux(nil)
+	mux := NewMux(nil, nil)
 
 	// /health should work
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -70,7 +69,7 @@ func TestNewMux_NilWebhook(t *testing.T) {
 }
 
 func TestNewMux_APIDocsEndpoint(t *testing.T) {
-	mux := NewMux(nil)
+	mux := NewMux(nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api-docs", nil)
 	w := httptest.NewRecorder()
@@ -89,7 +88,7 @@ func TestNewMux_APIDocsEndpoint(t *testing.T) {
 }
 
 func TestNewMux_UnknownPathReturns404(t *testing.T) {
-	mux := NewMux(nil)
+	mux := NewMux(nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/unknown/path", nil)
 	w := httptest.NewRecorder()
@@ -103,13 +102,20 @@ func TestNewMux_UnknownPathReturns404(t *testing.T) {
 // mockMirrorer for webhook testing within server package
 type mockMirrorer struct{}
 
-func (m *mockMirrorer) SyncByTarget(_ context.Context, providerName, repoPath string, meta mirror.EventMeta) error {
+func (m *mockMirrorer) SyncByTarget(_ context.Context, providerName, repoPath string, _ mirror.EventMeta) error {
+	return nil
+}
+
+// mockRetrier for retry handler testing within server package
+type mockRetrier struct{}
+
+func (m *mockRetrier) Retry(_ context.Context, _, _ string, _ mirror.EventMeta) error {
 	return nil
 }
 
 func TestNewMux_WithWebhook(t *testing.T) {
 	wh := consumer.NewWebhook(context.Background(), &mockMirrorer{}, "", "")
-	mux := NewMux(wh)
+	mux := NewMux(wh, nil)
 
 	// /health
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -138,12 +144,41 @@ func TestNewMux_WithWebhook(t *testing.T) {
 	}
 }
 
+func TestNewMux_WithRetry(t *testing.T) {
+	retry := consumer.NewRetry(context.Background(), &mockRetrier{}, "tok")
+	mux := NewMux(nil, retry)
+
+	// Authorized POST should reach the handler and be accepted (200).
+	payload := `{"repo":"my-repo","direction":"auto"}`
+	req := httptest.NewRequest(http.MethodPost, "/retry/mirror", bytes.NewReader([]byte(payload)))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("/retry/mirror status = %d, want 200", w.Code)
+	}
+}
+
+func TestNewMux_RetryDisabledTokenUnset(t *testing.T) {
+	// Empty token disables the endpoint — handler must return 404.
+	retry := consumer.NewRetry(context.Background(), &mockRetrier{}, "")
+	mux := NewMux(nil, retry)
+
+	req := httptest.NewRequest(http.MethodPost, "/retry/mirror", bytes.NewReader([]byte(`{}`)))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("/retry/mirror status = %d, want 404 when token unset", w.Code)
+	}
+}
+
 func TestRunServer_GracefulShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
 	go func() {
-		RunServer(ctx, 0, nil)
+		RunServer(ctx, 0, nil, nil)
 		close(done)
 	}()
 
@@ -158,6 +193,7 @@ func TestRunServer_GracefulShutdown(t *testing.T) {
 }
 
 func TestRunServer_PortInUse(t *testing.T) {
+	// Bind a port on all interfaces (same as RunServer uses ":port")
 	ln, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatalf("failed to bind: %v", err)
@@ -171,7 +207,8 @@ func TestRunServer_PortInUse(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		RunServer(ctx, port, nil)
+		// This should fail immediately with "address already in use"
+		RunServer(ctx, port, nil, nil)
 		close(done)
 	}()
 

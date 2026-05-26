@@ -182,6 +182,7 @@ repos:
 | `/ready` | GET | Readiness probe |
 | `/webhook/gitlab` | POST | GitLab push event receiver |
 | `/webhook/github` | POST | GitHub push event receiver |
+| `/retry/mirror` | POST | Manual mirror retry (requires `Authorization: Bearer <RETRY_API_TOKEN>`) |
 
 > See [docs/API.md](docs/API.md) for detailed request/response specifications.
 
@@ -408,6 +409,8 @@ Register it in `provider.New()`.
 | [Naming Convention](docs/naming-convention.md) | Multi-provider naming convention guide |
 | [Advanced Config](docs/ADVANCE.md) | All provider combinations and detailed examples |
 | [API Reference](docs/API.md) | Endpoint request/response specifications |
+| [Retry API Guide](docs/retry-api.md) | `POST /retry/mirror` usage — token extraction, direction options, scenarios |
+| [Mirror Retry](docs/mirror-retry.md) | Manual retry procedure for failed mirrors + retry API background / incident case |
 | [GitLab Webhook](docs/gitlab-webhook-setup.md) | GitLab webhook setup guide |
 | [GitHub Webhook](docs/github-webhook-setup.md) | GitHub webhook setup guide |
 | [Slack App Setup](docs/slack-app-setup.md) | Slack notification setup guide |

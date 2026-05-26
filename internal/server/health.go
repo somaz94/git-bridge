@@ -17,8 +17,8 @@ const shutdownTimeout = 5 * time.Second
 //go:embed api-docs.html
 var apiDocsHTML []byte
 
-// NewMux creates the HTTP handler with health checks and webhook endpoints.
-func NewMux(webhook *consumer.Webhook) *http.ServeMux {
+// NewMux creates the HTTP handler with health checks, webhook, and retry endpoints.
+func NewMux(webhook *consumer.Webhook, retry *consumer.Retry) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// Health checks
@@ -38,12 +38,19 @@ func NewMux(webhook *consumer.Webhook) *http.ServeMux {
 		slog.Info("webhook endpoints registered", "gitlab", "/webhook/gitlab", "github", "/webhook/github")
 	}
 
+	// Retry endpoint — the handler itself enforces the empty-token = 404
+	// invariant, so we always register the route to keep the response uniform.
+	if retry != nil {
+		mux.HandleFunc("/retry/mirror", retry.Handler)
+		slog.Info("retry endpoint registered", "path", "/retry/mirror")
+	}
+
 	return mux
 }
 
-// RunServer starts the HTTP server with health checks and webhook endpoints.
-func RunServer(ctx context.Context, port int, webhook *consumer.Webhook) {
-	mux := NewMux(webhook)
+// RunServer starts the HTTP server with health checks, webhook, and retry endpoints.
+func RunServer(ctx context.Context, port int, webhook *consumer.Webhook, retry *consumer.Retry) {
+	mux := NewMux(webhook, retry)
 
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),

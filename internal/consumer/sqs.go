@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	sqsMaxMessages      = 10
-	sqsWaitTimeSeconds  = 20
+	sqsMaxMessages       = 10
+	sqsWaitTimeSeconds   = 20
 	sqsVisibilityTimeout = 120
-	sqsErrorRetryDelay  = 5 * time.Second
+	sqsErrorRetryDelay   = 5 * time.Second
 )
 
 // CodeCommitEvent represents the EventBridge event from CodeCommit.

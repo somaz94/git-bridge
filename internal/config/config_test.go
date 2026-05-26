@@ -658,6 +658,105 @@ repos:
 	}
 }
 
+// --- retry_direction validation ---
+
+func writeAndLoad(t *testing.T, content string) (*Config, error) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return Load(path)
+}
+
+const retryDirectionBaseYAML = `
+providers:
+  cc:
+    type: codecommit
+    region: us-east-1
+    credentials:
+      git_username: u
+      git_password: p
+  gl:
+    type: gitlab
+    base_url: http://gl.test
+    credentials:
+      token: tok
+consumer:
+  queue_url: https://sqs.test/q
+  region: us-east-1
+`
+
+func TestLoad_RetryDirection_ValidOnBidirectional(t *testing.T) {
+	yaml := retryDirectionBaseYAML + `repos:
+  - name: r
+    source: cc
+    target: gl
+    source_path: r
+    target_path: t/r
+    direction: bidirectional
+    retry_direction: source-to-target
+`
+	cfg, err := writeAndLoad(t, yaml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Repos[0].RetryDirection != "source-to-target" {
+		t.Errorf("retry_direction = %q, want source-to-target", cfg.Repos[0].RetryDirection)
+	}
+}
+
+func TestLoad_RetryDirection_OmittedOK(t *testing.T) {
+	yaml := retryDirectionBaseYAML + `repos:
+  - name: r
+    source: cc
+    target: gl
+    source_path: r
+    target_path: t/r
+    direction: bidirectional
+`
+	cfg, err := writeAndLoad(t, yaml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Repos[0].RetryDirection != "" {
+		t.Errorf("retry_direction should be empty when omitted, got %q", cfg.Repos[0].RetryDirection)
+	}
+}
+
+func TestLoad_RetryDirection_InvalidValue(t *testing.T) {
+	yaml := retryDirectionBaseYAML + `repos:
+  - name: r
+    source: cc
+    target: gl
+    source_path: r
+    target_path: t/r
+    direction: bidirectional
+    retry_direction: bidirectional
+`
+	_, err := writeAndLoad(t, yaml)
+	if err == nil {
+		t.Fatal("expected error for retry_direction=bidirectional (only source-to-target / target-to-source allowed)")
+	}
+}
+
+func TestLoad_RetryDirection_ConflictsWithOneWay(t *testing.T) {
+	yaml := retryDirectionBaseYAML + `repos:
+  - name: r
+    source: cc
+    target: gl
+    source_path: r
+    target_path: t/r
+    direction: source-to-target
+    retry_direction: target-to-source
+`
+	_, err := writeAndLoad(t, yaml)
+	if err == nil {
+		t.Fatal("expected error for retry_direction conflicting with one-way direction")
+	}
+}
+
 func TestLoad_LegacyConsumerBackwardCompat(t *testing.T) {
 	content := `
 providers:

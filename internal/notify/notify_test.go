@@ -125,6 +125,46 @@ func TestSlack_Send_Warning(t *testing.T) {
 	}
 }
 
+// When Message.WebhookURL is set, Slack.Send must POST to that URL instead of
+// the notifier's configured default. Two test servers cover both branches.
+func TestSlack_Send_MessageWebhookURLOverride(t *testing.T) {
+	defaultHits := 0
+	overrideHits := 0
+
+	defaultSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		defaultHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer defaultSrv.Close()
+	overrideSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		overrideHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer overrideSrv.Close()
+
+	s := NewSlack(config.SlackConfig{WebhookURL: defaultSrv.URL})
+
+	// 1) Without override → hits the default server
+	s.Send(Message{Level: "success", Title: "T", Body: "B"})
+	if defaultHits != 1 || overrideHits != 0 {
+		t.Errorf("default branch: defaultHits=%d overrideHits=%d", defaultHits, overrideHits)
+	}
+
+	// 2) With override → hits the override server, not the default
+	s.Send(Message{Level: "success", Title: "T", Body: "B", WebhookURL: overrideSrv.URL})
+	if defaultHits != 1 || overrideHits != 1 {
+		t.Errorf("override branch: defaultHits=%d overrideHits=%d", defaultHits, overrideHits)
+	}
+}
+
+func TestNoop_Send_DoesNothing(t *testing.T) {
+	// Noop.Send must not panic and must accept any Message. There is no
+	// observable side-effect — we exercise the call site for coverage.
+	n := NewNoop()
+	n.Send(Message{Level: "success", Title: "T", Body: "B"})
+	n.Send(Message{Level: "error", Title: "X", Body: "Y", WebhookURL: "ignored"})
+}
+
 func TestNewSlack(t *testing.T) {
 	s := NewSlack(config.SlackConfig{
 		WebhookURL: "https://hooks.slack.com/test",

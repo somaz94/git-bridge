@@ -157,6 +157,85 @@ GitHub push event payload (sent automatically by GitHub):
 
 <br/>
 
+## Retry API
+
+<br/>
+
+### POST /retry/mirror
+
+Manually re-runs a mirror sync for the specified repo. Designed for recovery
+from transient failures (e.g. AWS region blip) where the original webhook/SQS
+event has already been consumed and lost.
+
+When `RETRY_API_TOKEN` is unset, the endpoint is disabled — every request
+returns 404 (different policy from webhook endpoints, which fall back to
+"skip verification" on empty secret).
+
+#### Headers
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `Authorization` | Yes | `Bearer <RETRY_API_TOKEN>` (constant-time compared) |
+| `Content-Type` | Yes | `application/json` |
+
+#### Request Body
+
+```json
+{
+  "repo": "my-repo",
+  "direction": "target-to-source",
+  "ref": "refs/tags/Build-2231"
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `repo` | Yes | `RepoConfig.Name` from `config.yaml` (not `source_path` / `target_path`) |
+| `direction` | No | `source-to-target`, `target-to-source`, or `auto` (default). `auto` resolves to `target-to-source` for bidirectional repos, otherwise to the repo's single allowed direction |
+| `ref` | No | Full ref (e.g. `refs/tags/v1.0.0`). When omitted, an incremental fetch + push is still performed — useful to catch up any missed refs |
+
+#### Response
+
+```json
+{
+  "status": "accepted",
+  "repo": "my-repo",
+  "direction": "target-to-source",
+  "ref": "refs/tags/Build-2231",
+  "queued_at": "2026-05-22T07:51:24Z"
+}
+```
+
+| Status Code | Description |
+|-------------|-------------|
+| 200 | Request accepted, retry started in background goroutine |
+| 400 | Missing/empty `repo`, invalid `direction`, or invalid JSON |
+| 401 | Missing or invalid `Authorization` header |
+| 404 | Endpoint disabled (`RETRY_API_TOKEN` not set) |
+| 405 | Method not allowed (only POST) |
+
+The Slack notification body for retry-triggered syncs includes an extra
+`Source: retry-api` line so the on-call operator can immediately distinguish
+manual retries from webhook-driven syncs.
+
+#### Example
+
+```bash
+TOKEN=$(kubectl -n git-bridge get secret git-bridge-secret \
+  -o jsonpath='{.data.RETRY_API_TOKEN}' | base64 -d)
+
+curl -X POST https://git-bridge.example.com/retry/mirror \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "repo": "my-repo",
+    "direction": "target-to-source",
+    "ref": "refs/tags/Build-2231"
+  }'
+```
+
+<br/>
+
 ## SQS Consumer (Internal)
 
 Not an HTTP endpoint. The SQS consumer polls the configured SQS queue for CodeCommit events.

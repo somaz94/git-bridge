@@ -31,7 +31,7 @@ func signPayload(payload []byte, secret string) string {
 }
 
 func TestGitLabHandler_ValidPush(t *testing.T) {
-	wh := NewWebhook(context.Background(), &mockMirrorer{},"", "")
+	wh := NewWebhook(context.Background(), &mockMirrorer{}, "", "")
 
 	payload := GitLabPushEvent{
 		EventName: "push",
@@ -52,7 +52,7 @@ func TestGitLabHandler_ValidPush(t *testing.T) {
 }
 
 func TestGitLabHandler_InvalidToken(t *testing.T) {
-	wh := NewWebhook(context.Background(), &mockMirrorer{},"correct-secret", "")
+	wh := NewWebhook(context.Background(), &mockMirrorer{}, "correct-secret", "")
 
 	payload := GitLabPushEvent{}
 	body, _ := json.Marshal(payload)
@@ -68,7 +68,7 @@ func TestGitLabHandler_InvalidToken(t *testing.T) {
 }
 
 func TestGitLabHandler_ValidToken(t *testing.T) {
-	wh := NewWebhook(context.Background(), &mockMirrorer{},"my-secret", "")
+	wh := NewWebhook(context.Background(), &mockMirrorer{}, "my-secret", "")
 
 	payload := GitLabPushEvent{Ref: "refs/heads/main"}
 	payload.Project.PathWithNamespace = "team/test-repo"
@@ -86,7 +86,7 @@ func TestGitLabHandler_ValidToken(t *testing.T) {
 }
 
 func TestGitLabHandler_MethodNotAllowed(t *testing.T) {
-	wh := NewWebhook(context.Background(), &mockMirrorer{},"", "")
+	wh := NewWebhook(context.Background(), &mockMirrorer{}, "", "")
 
 	req := httptest.NewRequest(http.MethodGet, "/webhook/gitlab", nil)
 	w := httptest.NewRecorder()
@@ -99,7 +99,7 @@ func TestGitLabHandler_MethodNotAllowed(t *testing.T) {
 }
 
 func TestGitLabHandler_InvalidBody(t *testing.T) {
-	wh := NewWebhook(context.Background(), &mockMirrorer{},"", "")
+	wh := NewWebhook(context.Background(), &mockMirrorer{}, "", "")
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook/gitlab", bytes.NewReader([]byte("not json")))
 	w := httptest.NewRecorder()
@@ -112,7 +112,7 @@ func TestGitLabHandler_InvalidBody(t *testing.T) {
 }
 
 func TestGitHubHandler_ValidPush(t *testing.T) {
-	wh := NewWebhook(context.Background(), &mockMirrorer{},"", "")
+	wh := NewWebhook(context.Background(), &mockMirrorer{}, "", "")
 
 	payload := GitHubPushEvent{Ref: "refs/heads/main"}
 	payload.Repository.Name = "test-repo"
@@ -131,7 +131,7 @@ func TestGitHubHandler_ValidPush(t *testing.T) {
 
 func TestGitHubHandler_ValidHMAC(t *testing.T) {
 	secret := "my-secret"
-	wh := NewWebhook(context.Background(), &mockMirrorer{},"", secret)
+	wh := NewWebhook(context.Background(), &mockMirrorer{}, "", secret)
 
 	payload := GitHubPushEvent{Ref: "refs/heads/main"}
 	payload.Repository.Name = "test-repo"
@@ -150,7 +150,7 @@ func TestGitHubHandler_ValidHMAC(t *testing.T) {
 }
 
 func TestGitHubHandler_InvalidHMAC(t *testing.T) {
-	wh := NewWebhook(context.Background(), &mockMirrorer{},"", "correct-secret")
+	wh := NewWebhook(context.Background(), &mockMirrorer{}, "", "correct-secret")
 
 	payload := GitHubPushEvent{}
 	body, _ := json.Marshal(payload)
@@ -166,7 +166,7 @@ func TestGitHubHandler_InvalidHMAC(t *testing.T) {
 }
 
 func TestGitHubHandler_MissingSignature(t *testing.T) {
-	wh := NewWebhook(context.Background(), &mockMirrorer{},"", "my-secret")
+	wh := NewWebhook(context.Background(), &mockMirrorer{}, "", "my-secret")
 
 	payload := GitHubPushEvent{}
 	body, _ := json.Marshal(payload)
@@ -182,7 +182,7 @@ func TestGitHubHandler_MissingSignature(t *testing.T) {
 }
 
 func TestGitHubHandler_MethodNotAllowed(t *testing.T) {
-	wh := NewWebhook(context.Background(), &mockMirrorer{},"", "")
+	wh := NewWebhook(context.Background(), &mockMirrorer{}, "", "")
 
 	req := httptest.NewRequest(http.MethodGet, "/webhook/github", nil)
 	w := httptest.NewRecorder()
@@ -195,7 +195,7 @@ func TestGitHubHandler_MethodNotAllowed(t *testing.T) {
 }
 
 func TestGitHubHandler_InvalidBody(t *testing.T) {
-	wh := NewWebhook(context.Background(), &mockMirrorer{},"", "")
+	wh := NewWebhook(context.Background(), &mockMirrorer{}, "", "")
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook/github", bytes.NewReader([]byte("{invalid")))
 	w := httptest.NewRecorder()
@@ -208,7 +208,7 @@ func TestGitHubHandler_InvalidBody(t *testing.T) {
 }
 
 func TestGitHubHandler_NoSecretSkipsVerification(t *testing.T) {
-	wh := NewWebhook(context.Background(), &mockMirrorer{},"", "")
+	wh := NewWebhook(context.Background(), &mockMirrorer{}, "", "")
 
 	payload := GitHubPushEvent{Ref: "refs/heads/main"}
 	payload.Repository.Name = "test-repo"
@@ -226,7 +226,7 @@ func TestGitHubHandler_NoSecretSkipsVerification(t *testing.T) {
 }
 
 func TestGitLabHandler_NoSecretSkipsVerification(t *testing.T) {
-	wh := NewWebhook(context.Background(), &mockMirrorer{},"", "")
+	wh := NewWebhook(context.Background(), &mockMirrorer{}, "", "")
 
 	payload := GitLabPushEvent{Ref: "refs/heads/main"}
 	payload.Project.PathWithNamespace = "team/test-repo"

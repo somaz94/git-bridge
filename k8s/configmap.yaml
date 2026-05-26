@@ -34,6 +34,8 @@ data:
         source_path: my-app
         target_path: server/my-app
         direction: bidirectional
+        retry_direction: target-to-source
+        slack_webhook_url: "${MY_APP_SLACK_WEBHOOK_URL}"
 
       - name: my-lib
         source: codecommit-eu
@@ -54,6 +56,9 @@ data:
     webhook:
       gitlab_secret: "${WEBHOOK_GITLAB_SECRET}"
       github_secret: "${WEBHOOK_GITHUB_SECRET}"
+
+    retry:
+      api_token: "${RETRY_API_TOKEN}"
 
     notification:
       slack:

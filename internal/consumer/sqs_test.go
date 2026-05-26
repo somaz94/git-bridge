@@ -43,11 +43,11 @@ func (m *mockSQSClient) DeleteMessage(ctx context.Context, input *sqs.DeleteMess
 
 // mockSyncer records Sync and SyncDelete calls and returns configurable errors.
 type mockSyncer struct {
-	syncCalls       []string
-	syncMetas       []mirror.EventMeta
-	syncErr         error
-	deleteCalls     []deleteCall
-	syncDeleteErr   error
+	syncCalls     []string
+	syncMetas     []mirror.EventMeta
+	syncErr       error
+	deleteCalls   []deleteCall
+	syncDeleteErr error
 }
 
 type deleteCall struct {

@@ -81,16 +81,19 @@ func main() {
 		cfg.Webhook.GitHubSecret,
 	)
 
+	// Init retry consumer (handler returns 404 when token is unset).
+	retry := consumer.NewRetry(ctx, mirrorSvc, cfg.Retry.APIToken)
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	var wg sync.WaitGroup
 
-	// Start HTTP server (health + webhook endpoints)
+	// Start HTTP server (health + webhook + retry endpoints)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		server.RunServer(ctx, cfg.Server.Port, webhook)
+		server.RunServer(ctx, cfg.Server.Port, webhook, retry)
 	}()
 
 	// Start SQS consumers (if configured)
