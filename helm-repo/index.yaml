@@ -2,11 +2,11 @@ apiVersion: v1
 entries:
   git-bridge:
   - apiVersion: v2
-    appVersion: v0.5.0
-    created: "2026-05-26T06:36:00.318321237Z"
+    appVersion: v0.6.0
+    created: "2026-06-01T09:37:21.031652516Z"
     description: A Helm chart for git-bridge — multi-provider, bidirectional Git repository
       mirroring service
-    digest: 8d8288ed1007a6c678a367cf4318ffaf73c724d934e6ef1315e3a060cd018b93
+    digest: 2597c26dee6cd29615eabeaf283f30cadd2d961aa10d37f045bca3ed8073625f
     home: https://github.com/somaz94/git-bridge
     keywords:
     - git
@@ -55,4 +55,4 @@ entries:
     urls:
     - https://somaz94.github.io/git-bridge/helm-repo/git-bridge-0.4.0.tgz
     version: 0.4.0
-generated: "2026-05-26T06:36:00.317486999Z"
+generated: "2026-06-01T09:37:21.030900709Z"
