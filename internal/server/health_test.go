@@ -106,6 +106,10 @@ func (m *mockMirrorer) SyncByTarget(_ context.Context, providerName, repoPath st
 	return nil
 }
 
+func (m *mockMirrorer) SyncDeleteByTarget(_ context.Context, providerName, repoPath, refType, refName string) error {
+	return nil
+}
+
 // mockRetrier for retry handler testing within server package
 type mockRetrier struct{}
 

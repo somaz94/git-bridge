@@ -94,6 +94,21 @@ providers:
 #   target-to-source  — target → source (one-way, target webhook triggers sync)
 #   bidirectional     — both directions (either side can trigger sync)
 #
+# Optional per-ref direction pinning (ref_overrides):
+#   Keep a repo bidirectional, but pin specific refs (branches/tags) to a single
+#   provider→provider direction. Events in the opposite direction for a matched
+#   ref are silently skipped, and pushes are scoped to the triggered ref (no
+#   blanket --all). Use this when one side is the clear authority for a branch
+#   and the other side must never overwrite it.
+#     ref_overrides:
+#       - pattern: "release"      # ref short-name glob (path.Match); '*' does not cross '/'
+#         from: gitlab-main       # allowed direction: source provider name
+#         to: codecommit-eu       # allowed direction: target provider name
+#   Rules: pattern/from/to required; from != to; from/to must be this repo's
+#   source and target; for one-way repos the pinned direction must match the
+#   repo direction; duplicate patterns are rejected. Repos without ref_overrides
+#   are unaffected (full --all/--tags push, unchanged behavior).
+#
 # To add a new repo, just append an entry below.
 # No Secret or Deployment changes needed — only ConfigMap update + restart.
 # =============================================================================
@@ -107,12 +122,16 @@ repos:
     direction: source-to-target
 
   # CodeCommit(EU) ↔ GitLab (bidirectional — requires GitLab webhook)
+  # with a release branch pinned to GitLab→CodeCommit only (GitLab authoritative)
   - name: web-app
     source: codecommit-eu
     target: gitlab-main
     source_path: web-app
     target_path: frontend/web-app
     direction: bidirectional
+    ref_overrides:
+      - { pattern: "release", from: gitlab-main, to: codecommit-eu }
+      - { pattern: "release-*", from: gitlab-main, to: codecommit-eu }
 
   # CodeCommit(EU) → GitLab (one-way)
   - name: infra-terraform

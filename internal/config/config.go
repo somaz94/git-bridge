@@ -3,9 +3,18 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+)
+
+// 미러 방향 값 상수 — repo의 sync 방향(Direction)과 retry 방향 비교에 쓰인다.
+// config가 스키마의 소유자이므로 여기서 정의하고 다른 패키지가 재사용한다.
+const (
+	DirectionSourceToTarget = "source-to-target"
+	DirectionTargetToSource = "target-to-source"
+	DirectionBidirectional  = "bidirectional"
 )
 
 type Config struct {
@@ -36,14 +45,38 @@ type ProviderConfig struct {
 }
 
 type RepoConfig struct {
-	Name            string `yaml:"name"`
-	Source          string `yaml:"source"`            // provider name
-	Target          string `yaml:"target"`            // provider name
-	SourcePath      string `yaml:"source_path"`       // repo path on source
-	TargetPath      string `yaml:"target_path"`       // repo path on target
-	Direction       string `yaml:"direction"`         // source-to-target, target-to-source, bidirectional
-	RetryDirection  string `yaml:"retry_direction"`   // override for retry "auto" on bidirectional repos: source-to-target / target-to-source. empty = built-in fallback (target-to-source)
-	SlackWebhookURL string `yaml:"slack_webhook_url"` // per-repo override; empty falls back to notification.slack.webhook_url
+	Name            string        `yaml:"name"`
+	Source          string        `yaml:"source"`                  // provider name
+	Target          string        `yaml:"target"`                  // provider name
+	SourcePath      string        `yaml:"source_path"`             // repo path on source
+	TargetPath      string        `yaml:"target_path"`             // repo path on target
+	Direction       string        `yaml:"direction"`               // source-to-target, target-to-source, bidirectional
+	RetryDirection  string        `yaml:"retry_direction"`         // override for retry "auto" on bidirectional repos: source-to-target / target-to-source. empty = built-in fallback (target-to-source)
+	RefOverrides    []RefOverride `yaml:"ref_overrides,omitempty"` // ref별 단방향 고정(빈 값 = repo Direction 그대로)
+	SlackWebhookURL string        `yaml:"slack_webhook_url"`       // per-repo override; empty falls back to notification.slack.webhook_url
+}
+
+// RefOverride는 특정 ref 패턴을 단일 방향(from→to provider)으로 고정한다.
+// repo는 bidirectional을 유지하되, 매칭된 ref는 from→to 방향으로만 미러되고
+// 반대 방향 이벤트는 조용히 skip된다. 양방향 미러에서 특정 브랜치의 권위(authoritative)
+// 측이 한쪽으로 분명할 때, 반대편의 묵은 push나 오삭제가 권위 측을 덮어쓰는 사고를
+// 구조적으로 차단한다.
+// from/to는 provider 맵 키를 그대로 쓴다(source/target 라벨 의존을 피해 방향 역전 함정 제거).
+type RefOverride struct {
+	Pattern string `yaml:"pattern"` // ref 짧은 이름 glob(path.Match): "release", "release-*". 주의: glob '*'는 '/'를 넘지 못함("release/*"는 "release/x"만, "release/x/y"는 미매칭)
+	From    string `yaml:"from"`    // 허용 방향의 출발 provider 이름
+	To      string `yaml:"to"`      // 허용 방향의 도착 provider 이름
+}
+
+// MatchRefOverride는 ref 짧은 이름(refName)에 매칭되는 첫 RefOverride를 반환한다(없으면 nil).
+// 패턴은 path.Match glob이며 설정 문서 순서상 first-match 규칙을 따른다.
+func (r RepoConfig) MatchRefOverride(refName string) *RefOverride {
+	for i := range r.RefOverrides {
+		if ok, _ := path.Match(r.RefOverrides[i].Pattern, refName); ok {
+			return &r.RefOverrides[i]
+		}
+	}
+	return nil
 }
 
 type ConsumerConfig struct {
@@ -137,18 +170,51 @@ func validate(cfg *Config) error {
 			return fmt.Errorf("repo[%d] %s: source and target cannot be the same provider", i, r.Name)
 		}
 		dir := strings.ToLower(r.Direction)
-		if dir != "source-to-target" && dir != "target-to-source" && dir != "bidirectional" {
+		if dir != DirectionSourceToTarget && dir != DirectionTargetToSource && dir != DirectionBidirectional {
 			return fmt.Errorf("repo[%d] %s: direction must be source-to-target, target-to-source, or bidirectional", i, r.Name)
 		}
 		// retry_direction is optional; only validated when set.
 		if r.RetryDirection != "" {
 			rd := strings.ToLower(r.RetryDirection)
-			if rd != "source-to-target" && rd != "target-to-source" {
+			if rd != DirectionSourceToTarget && rd != DirectionTargetToSource {
 				return fmt.Errorf("repo[%d] %s: retry_direction must be source-to-target or target-to-source (got %q)", i, r.Name, r.RetryDirection)
 			}
 			// On one-way repos retry_direction must match the repo's direction.
-			if dir != "bidirectional" && rd != dir {
+			if dir != DirectionBidirectional && rd != dir {
 				return fmt.Errorf("repo[%d] %s: retry_direction %q conflicts with one-way direction %q", i, r.Name, r.RetryDirection, r.Direction)
+			}
+		}
+		// ref_overrides 검증: 패턴 유효성 + from/to가 이 repo의 두 provider여야 하고
+		// repo Direction이 from→to 방향을 허용해야 한다(one-way repo와의 모순 방지).
+		seenPatterns := make(map[string]bool)
+		for j, ov := range r.RefOverrides {
+			if ov.Pattern == "" {
+				return fmt.Errorf("repo[%d] %s: ref_overrides[%d]: pattern required", i, r.Name, j)
+			}
+			// 중복 패턴은 first-match 규칙상 뒤 항목이 죽은 설정이 되므로 거부한다.
+			if seenPatterns[ov.Pattern] {
+				return fmt.Errorf("repo[%d] %s: ref_overrides[%d]: duplicate pattern %q", i, r.Name, j, ov.Pattern)
+			}
+			seenPatterns[ov.Pattern] = true
+			if _, err := path.Match(ov.Pattern, "x"); err != nil {
+				return fmt.Errorf("repo[%d] %s: ref_overrides[%d]: invalid pattern %q: %w", i, r.Name, j, ov.Pattern, err)
+			}
+			if ov.From == "" || ov.To == "" {
+				return fmt.Errorf("repo[%d] %s: ref_overrides[%d]: from and to required", i, r.Name, j)
+			}
+			if ov.From == ov.To {
+				return fmt.Errorf("repo[%d] %s: ref_overrides[%d]: from and to cannot be the same provider", i, r.Name, j)
+			}
+			isSrcToTgt := ov.From == r.Source && ov.To == r.Target
+			isTgtToSrc := ov.From == r.Target && ov.To == r.Source
+			if !isSrcToTgt && !isTgtToSrc {
+				return fmt.Errorf("repo[%d] %s: ref_overrides[%d]: from/to must be this repo's source(%q) and target(%q)", i, r.Name, j, r.Source, r.Target)
+			}
+			if dir == DirectionSourceToTarget && !isSrcToTgt {
+				return fmt.Errorf("repo[%d] %s: ref_overrides[%d]: direction %q does not allow %s→%s", i, r.Name, j, r.Direction, ov.From, ov.To)
+			}
+			if dir == DirectionTargetToSource && !isTgtToSrc {
+				return fmt.Errorf("repo[%d] %s: ref_overrides[%d]: direction %q does not allow %s→%s", i, r.Name, j, r.Direction, ov.From, ov.To)
 			}
 		}
 	}

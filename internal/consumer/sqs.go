@@ -21,6 +21,11 @@ const (
 	sqsWaitTimeSeconds   = 20
 	sqsVisibilityTimeout = 120
 	sqsErrorRetryDelay   = 5 * time.Second
+
+	eventReferenceDeleted = "referenceDeleted" // CodeCommit ref 삭제 이벤트 타입
+	refTypeTag            = "tag"              // ref 종류 라벨(태그)
+	refsTagsPrefix        = "refs/tags/"
+	refsHeadsPrefix       = "refs/heads/"
 )
 
 // CodeCommitEvent represents the EventBridge event from CodeCommit.
@@ -140,15 +145,13 @@ func (s *SQS) handleMessage(ctx context.Context, msg types.Message) {
 	logger = logger.With("repo", repo, "ref", ref, "event", eventType)
 	logger.Info("received mirror event")
 
-	var fullRef string
-	if refType == "tag" {
-		fullRef = "refs/tags/" + ref
-	} else {
-		fullRef = "refs/heads/" + ref
+	fullRef := refsHeadsPrefix + ref
+	if refType == refTypeTag {
+		fullRef = refsTagsPrefix + ref
 	}
 
 	var err error
-	if eventType == "referenceDeleted" {
+	if eventType == eventReferenceDeleted {
 		err = s.mirrorSvc.SyncDelete(ctx, repo, refType, ref)
 	} else {
 		err = s.mirrorSvc.Sync(ctx, repo, mirror.EventMeta{Ref: fullRef})

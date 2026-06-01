@@ -23,6 +23,10 @@ func (m *mockMirrorer) SyncByTarget(_ context.Context, providerName, repoPath st
 	return nil
 }
 
+func (m *mockMirrorer) SyncDeleteByTarget(_ context.Context, providerName, repoPath, refType, refName string) error {
+	return nil
+}
+
 // signPayload generates a GitHub-style HMAC-SHA256 signature for the given payload.
 func signPayload(payload []byte, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
@@ -245,16 +249,19 @@ func TestGitLabHandler_NoSecretSkipsVerification(t *testing.T) {
 // --- goroutine coverage: verify SyncByTarget is called ---
 
 type trackingMirrorer struct {
-	called chan string
-	meta   chan mirror.EventMeta
-	err    error
+	called    chan string
+	meta      chan mirror.EventMeta
+	deleted   chan string // captures "provider/repoPath/refType/refName" on SyncDeleteByTarget
+	err       error
+	deleteErr error
 }
 
 func newTrackingMirrorer(err error) *trackingMirrorer {
 	return &trackingMirrorer{
-		called: make(chan string, 1),
-		meta:   make(chan mirror.EventMeta, 1),
-		err:    err,
+		called:  make(chan string, 1),
+		meta:    make(chan mirror.EventMeta, 1),
+		deleted: make(chan string, 1),
+		err:     err,
 	}
 }
 
@@ -262,6 +269,11 @@ func (m *trackingMirrorer) SyncByTarget(_ context.Context, providerName, repoPat
 	m.called <- providerName + "/" + repoPath
 	m.meta <- meta
 	return m.err
+}
+
+func (m *trackingMirrorer) SyncDeleteByTarget(_ context.Context, providerName, repoPath, refType, refName string) error {
+	m.deleted <- providerName + "/" + repoPath + "/" + refType + "/" + refName
+	return m.deleteErr
 }
 
 func TestGitLabHandler_SyncByTargetCalled(t *testing.T) {
@@ -458,5 +470,151 @@ func TestGitHubHandler_PassesRefMeta(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("SyncByTarget was not called")
+	}
+}
+
+// --- delete-event dispatch tests ---
+
+// GitLab after==zeroSHA 브랜치 삭제 → SyncDeleteByTarget(branch).
+func TestGitLabHandler_BranchDeleteDispatchesDelete(t *testing.T) {
+	mock := newTrackingMirrorer(nil)
+	wh := NewWebhook(context.Background(), mock, "", "")
+
+	payload := GitLabPushEvent{Ref: "refs/heads/old-feature", After: zeroSHA}
+	payload.Project.PathWithNamespace = "team/test-repo"
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/gitlab", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	wh.GitLabHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	select {
+	case got := <-mock.deleted:
+		if got != "gitlab/team/test-repo/branch/old-feature" {
+			t.Errorf("unexpected delete call: %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SyncDeleteByTarget was not called")
+	}
+}
+
+// GitLab tag_push after==zeroSHA 태그 삭제 → SyncDeleteByTarget(tag).
+func TestGitLabHandler_TagDeleteDispatchesDelete(t *testing.T) {
+	mock := newTrackingMirrorer(nil)
+	wh := NewWebhook(context.Background(), mock, "", "")
+
+	payload := GitLabPushEvent{Ref: "refs/tags/v0.9.0", After: zeroSHA}
+	payload.Project.PathWithNamespace = "team/test-repo"
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/gitlab", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	wh.GitLabHandler(w, req)
+
+	select {
+	case got := <-mock.deleted:
+		if got != "gitlab/team/test-repo/tag/v0.9.0" {
+			t.Errorf("unexpected delete call: %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SyncDeleteByTarget was not called")
+	}
+}
+
+// GitHub deleted:true → SyncDeleteByTarget(branch).
+func TestGitHubHandler_DeletedFlagDispatchesDelete(t *testing.T) {
+	mock := newTrackingMirrorer(nil)
+	wh := NewWebhook(context.Background(), mock, "", "")
+
+	payload := GitHubPushEvent{Ref: "refs/heads/stale", Deleted: true}
+	payload.Repository.FullName = "org/test-repo"
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/github", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	wh.GitHubHandler(w, req)
+
+	select {
+	case got := <-mock.deleted:
+		if got != "github/org/test-repo/branch/stale" {
+			t.Errorf("unexpected delete call: %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SyncDeleteByTarget was not called")
+	}
+}
+
+// GitHub after==zeroSHA(deleted 플래그 없이)도 삭제로 처리한다.
+func TestGitHubHandler_AfterZeroDispatchesDelete(t *testing.T) {
+	mock := newTrackingMirrorer(nil)
+	wh := NewWebhook(context.Background(), mock, "", "")
+
+	payload := GitHubPushEvent{Ref: "refs/tags/v0.1.0", After: zeroSHA}
+	payload.Repository.FullName = "org/test-repo"
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/github", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	wh.GitHubHandler(w, req)
+
+	select {
+	case got := <-mock.deleted:
+		if got != "github/org/test-repo/tag/v0.1.0" {
+			t.Errorf("unexpected delete call: %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SyncDeleteByTarget was not called")
+	}
+}
+
+// 회귀 가드: 일반 push(after != zeroSHA)는 여전히 SyncByTarget으로 가야 한다.
+func TestGitLabHandler_NormalPushDoesNotDelete(t *testing.T) {
+	mock := newTrackingMirrorer(nil)
+	wh := NewWebhook(context.Background(), mock, "", "")
+
+	payload := GitLabPushEvent{Ref: "refs/heads/main", After: "abc1234567890abc1234567890abc1234567890a"}
+	payload.Project.PathWithNamespace = "team/test-repo"
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/gitlab", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	wh.GitLabHandler(w, req)
+
+	select {
+	case got := <-mock.called:
+		if got != "gitlab/team/test-repo" {
+			t.Errorf("unexpected sync call: %q", got)
+		}
+	case <-mock.deleted:
+		t.Fatal("normal push must not dispatch a delete")
+	case <-time.After(2 * time.Second):
+		t.Fatal("SyncByTarget was not called")
+	}
+}
+
+// 삭제 비동기 에러는 로그만 남기고 응답은 200(accepted).
+func TestGitLabHandler_DeleteErrorStillReturns200(t *testing.T) {
+	mock := newTrackingMirrorer(nil)
+	mock.deleteErr = fmt.Errorf("delete sync failed")
+	wh := NewWebhook(context.Background(), mock, "", "")
+
+	payload := GitLabPushEvent{Ref: "refs/heads/old", After: zeroSHA}
+	payload.Project.PathWithNamespace = "team/err-repo"
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/gitlab", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	wh.GitLabHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	select {
+	case <-mock.deleted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SyncDeleteByTarget was not called")
 	}
 }

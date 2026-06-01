@@ -805,3 +805,150 @@ consumer:
 		t.Errorf("access_key = %q, want AKIA", cfg.Consumers[0].Credentials.AccessKey)
 	}
 }
+
+// --- ref_overrides (Phase A) validation tests ---
+
+func TestLoad_RefOverrides_Valid(t *testing.T) {
+	yaml := retryDirectionBaseYAML + `repos:
+  - name: example
+    source: cc
+    target: gl
+    source_path: example
+    target_path: t/example
+    direction: bidirectional
+    ref_overrides:
+      - { pattern: "branch-a", from: gl, to: cc }
+      - { pattern: "branch-*", from: gl, to: cc }
+`
+	cfg, err := writeAndLoad(t, yaml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Repos[0].RefOverrides) != 2 {
+		t.Fatalf("expected 2 ref_overrides, got %d", len(cfg.Repos[0].RefOverrides))
+	}
+	if ov := cfg.Repos[0].MatchRefOverride("branch-a"); ov == nil || ov.From != "gl" || ov.To != "cc" {
+		t.Errorf("MatchRefOverride(branch-a) = %+v, want gl→cc", ov)
+	}
+	// first-match: branch-c matches the second pattern only
+	if ov := cfg.Repos[0].MatchRefOverride("branch-c"); ov == nil {
+		t.Error("MatchRefOverride(branch-c) should match branch-*")
+	}
+	if ov := cfg.Repos[0].MatchRefOverride("feature-x"); ov != nil {
+		t.Errorf("MatchRefOverride(feature-x) should be nil, got %+v", ov)
+	}
+}
+
+func TestLoad_RefOverrides_EmptyPattern(t *testing.T) {
+	yaml := retryDirectionBaseYAML + `repos:
+  - name: example
+    source: cc
+    target: gl
+    source_path: example
+    target_path: t/example
+    direction: bidirectional
+    ref_overrides:
+      - { pattern: "", from: gl, to: cc }
+`
+	if _, err := writeAndLoad(t, yaml); err == nil {
+		t.Fatal("expected error for empty pattern")
+	}
+}
+
+func TestLoad_RefOverrides_MissingFromTo(t *testing.T) {
+	yaml := retryDirectionBaseYAML + `repos:
+  - name: example
+    source: cc
+    target: gl
+    source_path: example
+    target_path: t/example
+    direction: bidirectional
+    ref_overrides:
+      - { pattern: "branch-a", from: gl }
+`
+	if _, err := writeAndLoad(t, yaml); err == nil {
+		t.Fatal("expected error for missing 'to'")
+	}
+}
+
+func TestLoad_RefOverrides_SameFromTo(t *testing.T) {
+	yaml := retryDirectionBaseYAML + `repos:
+  - name: example
+    source: cc
+    target: gl
+    source_path: example
+    target_path: t/example
+    direction: bidirectional
+    ref_overrides:
+      - { pattern: "branch-a", from: gl, to: gl }
+`
+	if _, err := writeAndLoad(t, yaml); err == nil {
+		t.Fatal("expected error for from == to")
+	}
+}
+
+func TestLoad_RefOverrides_UnknownProvider(t *testing.T) {
+	yaml := retryDirectionBaseYAML + `repos:
+  - name: example
+    source: cc
+    target: gl
+    source_path: example
+    target_path: t/example
+    direction: bidirectional
+    ref_overrides:
+      - { pattern: "branch-a", from: gl, to: github }
+`
+	if _, err := writeAndLoad(t, yaml); err == nil {
+		t.Fatal("expected error: from/to must be this repo's source and target")
+	}
+}
+
+func TestLoad_RefOverrides_ConflictsWithOneWay(t *testing.T) {
+	// repo는 source-to-target(cc→gl)만 허용인데 override가 gl→cc(역방향)를 요구 → 에러
+	yaml := retryDirectionBaseYAML + `repos:
+  - name: example
+    source: cc
+    target: gl
+    source_path: example
+    target_path: t/example
+    direction: source-to-target
+    ref_overrides:
+      - { pattern: "branch-a", from: gl, to: cc }
+`
+	if _, err := writeAndLoad(t, yaml); err == nil {
+		t.Fatal("expected error: override direction conflicts with one-way repo direction")
+	}
+}
+
+func TestLoad_RefOverrides_InvalidPattern(t *testing.T) {
+	yaml := retryDirectionBaseYAML + `repos:
+  - name: example
+    source: cc
+    target: gl
+    source_path: example
+    target_path: t/example
+    direction: bidirectional
+    ref_overrides:
+      - { pattern: "[invalid", from: gl, to: cc }
+`
+	if _, err := writeAndLoad(t, yaml); err == nil {
+		t.Fatal("expected error for invalid glob pattern")
+	}
+}
+
+func TestLoad_RefOverrides_DuplicatePattern(t *testing.T) {
+	yaml := retryDirectionBaseYAML + `repos:
+  - name: example
+    source: cc
+    target: gl
+    source_path: example
+    target_path: t/example
+    direction: bidirectional
+    ref_overrides:
+      - { pattern: "branch-a", from: gl, to: cc }
+      - { pattern: "branch-a", from: cc, to: gl }
+`
+	if _, err := writeAndLoad(t, yaml); err == nil {
+		t.Fatal("expected error for duplicate ref_override pattern")
+	}
+}

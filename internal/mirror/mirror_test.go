@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +28,18 @@ type mockGitRunner struct {
 	deleteRefErr    error
 	commitAuthor    string // return value for CommitAuthor
 	commitAuthorErr error
+	listRefs        []string // return value for ListRefs
+	listRefsErr     error
+	listRefsCalls   int
+	refMissing      bool // when true, RefExists reports the ref is absent (idempotent skip)
+	refExistsErr    error
+	refExistsCalls  []refExistsCall
+}
+
+type refExistsCall struct {
+	URL     string
+	RefType string
+	RefName string
 }
 
 type cloneCall struct {
@@ -40,8 +53,9 @@ type fetchCall struct {
 }
 
 type pushCall struct {
-	Dir string
-	URL string
+	Dir      string
+	URL      string
+	Refspecs []string
 }
 
 type deleteRefCall struct {
@@ -60,14 +74,27 @@ func (m *mockGitRunner) FetchMirror(_ context.Context, url, dir string) error {
 	return m.fetchErr
 }
 
-func (m *mockGitRunner) PushMirror(_ context.Context, dir, url string) (bool, error) {
-	m.pushCalls = append(m.pushCalls, pushCall{Dir: dir, URL: url})
+func (m *mockGitRunner) PushMirror(_ context.Context, dir, url string, refspecs []string) (bool, error) {
+	m.pushCalls = append(m.pushCalls, pushCall{Dir: dir, URL: url, Refspecs: refspecs})
 	return m.pushChanged, m.pushErr
+}
+
+func (m *mockGitRunner) ListRefs(_ context.Context, _ string) ([]string, error) {
+	m.listRefsCalls++
+	return m.listRefs, m.listRefsErr
 }
 
 func (m *mockGitRunner) DeleteRef(_ context.Context, _, url, refType, refName string) error {
 	m.deleteRefCalls = append(m.deleteRefCalls, deleteRefCall{URL: url, RefType: refType, RefName: refName})
 	return m.deleteRefErr
+}
+
+func (m *mockGitRunner) RefExists(_ context.Context, url, refType, refName string) (bool, error) {
+	m.refExistsCalls = append(m.refExistsCalls, refExistsCall{URL: url, RefType: refType, RefName: refName})
+	if m.refExistsErr != nil {
+		return false, m.refExistsErr
+	}
+	return !m.refMissing, nil
 }
 
 func (m *mockGitRunner) CommitAuthor(_ context.Context, _, _ string) (string, error) {
@@ -550,6 +577,10 @@ func TestSyncDelete_Success(t *testing.T) {
 	if len(notif.messages) != 1 || notif.messages[0].Level != "success" {
 		t.Errorf("expected success notification, got %+v", notif.messages)
 	}
+	// 삭제 알림은 방향(Route)을 보여줘야 한다(push의 Mirror Sync와 대칭).
+	if !strings.Contains(notif.messages[0].Body, "Route: codecommit/my-repo → gitlab/team/my-repo") {
+		t.Errorf("expected delete notification to show Route direction, got %q", notif.messages[0].Body)
+	}
 }
 
 func TestSyncDelete_Tag(t *testing.T) {
@@ -659,7 +690,7 @@ func TestDefaultGitRunner_PushMirror(t *testing.T) {
 	if err := runner.CloneMirror(context.Background(), srcDir, mirrorDir); err != nil {
 		t.Fatalf("CloneMirror failed: %v", err)
 	}
-	changed, err := runner.PushMirror(context.Background(), mirrorDir, tgtDir)
+	changed, err := runner.PushMirror(context.Background(), mirrorDir, tgtDir, nil)
 	if err != nil {
 		t.Fatalf("PushMirror failed: %v", err)
 	}
@@ -668,12 +699,71 @@ func TestDefaultGitRunner_PushMirror(t *testing.T) {
 	}
 
 	// Push again — should be up-to-date
-	changed2, err := runner.PushMirror(context.Background(), mirrorDir, tgtDir)
+	changed2, err := runner.PushMirror(context.Background(), mirrorDir, tgtDir, nil)
 	if err != nil {
 		t.Fatalf("PushMirror second push failed: %v", err)
 	}
 	if changed2 {
 		t.Error("expected changed=false for second push (up-to-date)")
+	}
+}
+
+// TestDefaultGitRunner_PushMirror_Scoped는 refspec을 지정한 스코프 push가
+// 해당 ref만 밀고, ListRefs가 로컬 ref를 반환하는지 실제 git으로 검증한다.
+func TestDefaultGitRunner_PushMirror_Scoped(t *testing.T) {
+	srcDir := t.TempDir()
+	runGit(t, srcDir, "init")
+	runGit(t, srcDir, "config", "user.email", "test@test.com")
+	runGit(t, srcDir, "config", "user.name", "test")
+	writeFile(t, srcDir+"/file.txt", "hello")
+	runGit(t, srcDir, "add", ".")
+	runGit(t, srcDir, "commit", "-m", "init")
+	runGit(t, srcDir, "branch", "feature-x")
+
+	tgtDir := t.TempDir()
+	runGit(t, tgtDir, "init", "--bare")
+
+	runner := &defaultGitRunner{}
+	mirrorDir := t.TempDir() + "/mirror.git"
+	if err := runner.CloneMirror(context.Background(), srcDir, mirrorDir); err != nil {
+		t.Fatalf("CloneMirror failed: %v", err)
+	}
+
+	// ListRefs는 두 브랜치(main 계열 + feature-x)를 반환해야 한다.
+	refs, err := runner.ListRefs(context.Background(), mirrorDir)
+	if err != nil {
+		t.Fatalf("ListRefs failed: %v", err)
+	}
+	hasFeature := false
+	for _, r := range refs {
+		if r == "refs/heads/feature-x" {
+			hasFeature = true
+		}
+	}
+	if !hasFeature {
+		t.Errorf("ListRefs missing refs/heads/feature-x, got %v", refs)
+	}
+
+	// feature-x만 스코프 push → 타깃에 feature-x만 존재해야 한다.
+	changed, err := runner.PushMirror(context.Background(), mirrorDir, tgtDir,
+		[]string{"+refs/heads/feature-x:refs/heads/feature-x"})
+	if err != nil {
+		t.Fatalf("scoped PushMirror failed: %v", err)
+	}
+	if !changed {
+		t.Error("expected changed=true for scoped push")
+	}
+	tgtRefs, err := runner.ListRefs(context.Background(), tgtDir)
+	if err != nil {
+		t.Fatalf("ListRefs(target) failed: %v", err)
+	}
+	for _, r := range tgtRefs {
+		if r != "refs/heads/feature-x" {
+			t.Errorf("scoped push leaked ref %q to target (expected only feature-x)", r)
+		}
+	}
+	if len(tgtRefs) != 1 {
+		t.Errorf("expected exactly 1 ref on target, got %v", tgtRefs)
 	}
 }
 
@@ -700,6 +790,70 @@ func TestDefaultGitRunner_DeleteRef(t *testing.T) {
 	err := runner.DeleteRef(context.Background(), workDir, tgtDir, "branch", "feature-branch")
 	if err != nil {
 		t.Fatalf("DeleteRef failed: %v", err)
+	}
+}
+
+func TestDefaultGitRunner_RefExists(t *testing.T) {
+	// Create a repo with a branch and a tag
+	srcDir := t.TempDir()
+	runGit(t, srcDir, "init")
+	runGit(t, srcDir, "config", "user.email", "test@test.com")
+	runGit(t, srcDir, "config", "user.name", "test")
+	writeFile(t, srcDir+"/file.txt", "hello")
+	runGit(t, srcDir, "add", ".")
+	runGit(t, srcDir, "commit", "-m", "init")
+	runGit(t, srcDir, "checkout", "-b", "feature-branch")
+	runGit(t, srcDir, "checkout", "master")
+	runGit(t, srcDir, "tag", "v1.0.0")
+
+	tgtDir := t.TempDir() + "/target.git"
+	runGit(t, "", "clone", "--bare", srcDir, tgtDir)
+
+	runner := &defaultGitRunner{}
+	ctx := context.Background()
+
+	// Present branch → true
+	exists, err := runner.RefExists(ctx, tgtDir, "branch", "feature-branch")
+	if err != nil {
+		t.Fatalf("RefExists(present branch) failed: %v", err)
+	}
+	if !exists {
+		t.Error("expected feature-branch to exist")
+	}
+
+	// Present tag → true
+	exists, err = runner.RefExists(ctx, tgtDir, "tag", "v1.0.0")
+	if err != nil {
+		t.Fatalf("RefExists(present tag) failed: %v", err)
+	}
+	if !exists {
+		t.Error("expected tag v1.0.0 to exist")
+	}
+
+	// Absent branch → false, no error
+	exists, err = runner.RefExists(ctx, tgtDir, "branch", "no-such-branch")
+	if err != nil {
+		t.Fatalf("RefExists(absent) returned error: %v", err)
+	}
+	if exists {
+		t.Error("expected no-such-branch to be absent")
+	}
+
+	// Prefix non-match: "feature" must not match "feature-branch".
+	exists, err = runner.RefExists(ctx, tgtDir, "branch", "feature")
+	if err != nil {
+		t.Fatalf("RefExists(prefix) returned error: %v", err)
+	}
+	if exists {
+		t.Error("prefix 'feature' must not match 'feature-branch'")
+	}
+}
+
+func TestDefaultGitRunner_RefExists_InvalidURL(t *testing.T) {
+	runner := &defaultGitRunner{}
+	_, err := runner.RefExists(context.Background(), "http://invalid.invalid.invalid/repo.git", "branch", "main")
+	if err == nil {
+		t.Fatal("expected error for invalid ls-remote URL")
 	}
 }
 
@@ -753,7 +907,7 @@ func TestDefaultGitRunner_PushMirror_InvalidURL(t *testing.T) {
 	}
 
 	// Push to invalid URL should fail
-	_, err := runner.PushMirror(context.Background(), mirrorDir, "http://invalid.invalid.invalid/repo.git")
+	_, err := runner.PushMirror(context.Background(), mirrorDir, "http://invalid.invalid.invalid/repo.git", nil)
 	if err == nil {
 		t.Fatal("expected error for invalid push URL")
 	}
@@ -804,7 +958,7 @@ func TestDefaultGitRunner_PushMirror_TagsFailure(t *testing.T) {
 	runGit(t, tgtDir, "init", "--bare")
 
 	// This should succeed (both branches and tags)
-	if _, err := runner.PushMirror(context.Background(), mirrorDir, tgtDir); err != nil {
+	if _, err := runner.PushMirror(context.Background(), mirrorDir, tgtDir, nil); err != nil {
 		t.Fatalf("PushMirror should succeed: %v", err)
 	}
 }
@@ -1196,7 +1350,7 @@ func TestDefaultGitRunner_PushMirror_TagsError(t *testing.T) {
 
 	tgtDir := t.TempDir()
 	runGit(t, tgtDir, "init", "--bare")
-	changed, err := runner.PushMirror(ctx, mirrorDir, tgtDir)
+	changed, err := runner.PushMirror(ctx, mirrorDir, tgtDir, nil)
 	if err != nil {
 		t.Fatalf("PushMirror failed: %v", err)
 	}
@@ -1719,4 +1873,416 @@ func NewGitLab(cfg config.ProviderConfig) provider.Provider {
 func NewGitHub(cfg config.ProviderConfig) provider.Provider {
 	p, _ := provider.New("gh", cfg)
 	return p
+}
+
+// --- ref_overrides (Phase A: per-ref direction) tests ---
+
+// bidiOverrideRepo는 ref_override를 가진 bidirectional repo 픽스처다.
+// source=codecommit-eu, target=gitlab-main, branch-a는 gitlab→codecommit(G→C)만 허용.
+func bidiOverrideRepo() config.RepoConfig {
+	return config.RepoConfig{
+		Name:       "example-bidi",
+		Source:     "codecommit-eu",
+		Target:     "gitlab-main",
+		SourcePath: "example-bidi",
+		TargetPath: "server/example-bidi",
+		Direction:  "bidirectional",
+		RefOverrides: []config.RefOverride{
+			{Pattern: "branch-a", From: "gitlab-main", To: "codecommit-eu"},
+		},
+	}
+}
+
+// 역방향(C→G) branch-a 이벤트는 조용히 skip되어야 한다(clone/push 없음, nil 반환).
+func TestDoMirror_RefOverride_SkipsReverseDirection(t *testing.T) {
+	git := &mockGitRunner{}
+	notif := &mockNotifier{}
+	svc := newTestService([]config.RepoConfig{bidiOverrideRepo()}, makeProviders(), notif, git)
+
+	// Sync = source-to-target = codecommit→gitlab = C→G (override는 G→C만 허용)
+	err := svc.Sync(context.Background(), "example-bidi", EventMeta{Ref: "refs/heads/branch-a"})
+	if err != nil {
+		t.Fatalf("expected nil (terminal skip), got %v", err)
+	}
+	if len(git.cloneCalls) != 0 || len(git.pushCalls) != 0 {
+		t.Errorf("reverse-direction event should skip: clones=%d pushes=%d", len(git.cloneCalls), len(git.pushCalls))
+	}
+	if len(notif.messages) != 0 {
+		t.Errorf("skip should not notify, got %+v", notif.messages)
+	}
+}
+
+// 허용 방향(G→C) branch-a 이벤트는 진행하고, push는 트리거 ref로 스코프되어야 한다.
+func TestDoMirror_RefOverride_AllowsForwardDirectionScoped(t *testing.T) {
+	git := &mockGitRunner{pushChanged: true, listRefs: []string{"refs/heads/branch-a"}}
+	notif := &mockNotifier{}
+	svc := newTestService([]config.RepoConfig{bidiOverrideRepo()}, makeProviders(), notif, git)
+
+	// SyncByTarget(gitlab,...) = target-to-source = gitlab→codecommit = G→C (허용)
+	err := svc.SyncByTarget(context.Background(), "gitlab", "server/example-bidi", EventMeta{Ref: "refs/heads/branch-a"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(git.pushCalls) != 1 {
+		t.Fatalf("expected 1 push, got %d", len(git.pushCalls))
+	}
+	want := []string{"+refs/heads/branch-a:refs/heads/branch-a"}
+	if !reflect.DeepEqual(git.pushCalls[0].Refspecs, want) {
+		t.Errorf("scoped refspec mismatch: got %v want %v", git.pushCalls[0].Refspecs, want)
+	}
+}
+
+// override에 매칭되지 않는 ref는 어느 방향이든 진행하며 단일 ref로 스코프된다.
+func TestDoMirror_RefOverride_NonMatchingRefProceeds(t *testing.T) {
+	git := &mockGitRunner{pushChanged: true, listRefs: []string{"refs/heads/branch-b"}}
+	notif := &mockNotifier{}
+	svc := newTestService([]config.RepoConfig{bidiOverrideRepo()}, makeProviders(), notif, git)
+
+	// C→G branch-b — override 미매칭이라 정상 진행
+	err := svc.Sync(context.Background(), "example-bidi", EventMeta{Ref: "refs/heads/branch-b"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(git.pushCalls) != 1 {
+		t.Fatalf("expected 1 push, got %d", len(git.pushCalls))
+	}
+	want := []string{"+refs/heads/branch-b:refs/heads/branch-b"}
+	if !reflect.DeepEqual(git.pushCalls[0].Refspecs, want) {
+		t.Errorf("scoped refspec mismatch: got %v want %v", git.pushCalls[0].Refspecs, want)
+	}
+}
+
+// 트리거 ref가 로컬에 없으면(없는 브랜치 retry / prune race) 에러 대신 no-op skip.
+func TestDoMirror_RefOverride_AbsentRefSkipsWithoutError(t *testing.T) {
+	// override repo인데 ListRefs에 트리거 ref(branch-a)가 없음 → push 안 함, 에러 없음
+	git := &mockGitRunner{pushChanged: true, listRefs: []string{"refs/heads/other"}}
+	notif := &mockNotifier{}
+	svc := newTestService([]config.RepoConfig{bidiOverrideRepo()}, makeProviders(), notif, git)
+
+	// G→C(허용 방향)이지만 branch-a가 로컬에 없음
+	err := svc.SyncByTarget(context.Background(), "gitlab", "server/example-bidi", EventMeta{Ref: "refs/heads/branch-a"})
+	if err != nil {
+		t.Fatalf("absent ref should be a no-op (nil), got %v", err)
+	}
+	if len(git.pushCalls) != 0 {
+		t.Errorf("absent ref should not push, got %d push calls", len(git.pushCalls))
+	}
+	if len(notif.messages) != 0 {
+		t.Errorf("absent ref should not notify (no false-alarm), got %+v", notif.messages)
+	}
+}
+
+// full-sync(meta.Ref 없음) C→G: ListRefs로 열거 후 override 금지 ref(branch-a)를 제외해야 한다.
+func TestDoMirror_FullSync_ExcludesOverriddenRef(t *testing.T) {
+	git := &mockGitRunner{
+		pushChanged: true,
+		listRefs:    []string{"refs/heads/branch-a", "refs/heads/branch-b", "refs/tags/v1.0.0"},
+	}
+	notif := &mockNotifier{}
+	svc := newTestService([]config.RepoConfig{bidiOverrideRepo()}, makeProviders(), notif, git)
+
+	// C→G full sync: branch-a는 제외, 나머지는 포함
+	err := svc.Sync(context.Background(), "example-bidi", EventMeta{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if git.listRefsCalls != 1 {
+		t.Errorf("expected ListRefs called once, got %d", git.listRefsCalls)
+	}
+	if len(git.pushCalls) != 1 {
+		t.Fatalf("expected 1 push, got %d", len(git.pushCalls))
+	}
+	want := []string{
+		"+refs/heads/branch-b:refs/heads/branch-b",
+		"+refs/tags/v1.0.0:refs/tags/v1.0.0",
+	}
+	if !reflect.DeepEqual(git.pushCalls[0].Refspecs, want) {
+		t.Errorf("full-sync refspec mismatch: got %v want %v", git.pushCalls[0].Refspecs, want)
+	}
+}
+
+// full-sync에서 ListRefs가 실패하면 fail-open: 기존 --all push(refspecs nil)로 폴백.
+func TestDoMirror_FullSync_ListRefsError_FailOpen(t *testing.T) {
+	git := &mockGitRunner{pushChanged: true, listRefsErr: fmt.Errorf("for-each-ref boom")}
+	notif := &mockNotifier{}
+	svc := newTestService([]config.RepoConfig{bidiOverrideRepo()}, makeProviders(), notif, git)
+
+	err := svc.Sync(context.Background(), "example-bidi", EventMeta{})
+	if err != nil {
+		t.Fatalf("fail-open expected nil error, got %v", err)
+	}
+	if len(git.pushCalls) != 1 {
+		t.Fatalf("expected 1 push, got %d", len(git.pushCalls))
+	}
+	if git.pushCalls[0].Refspecs != nil {
+		t.Errorf("fail-open should push with nil refspecs (--all), got %v", git.pushCalls[0].Refspecs)
+	}
+}
+
+// full-sync에서 이 방향의 ref가 모두 override로 제외되면 push 없이 no-op(nil).
+func TestDoMirror_FullSync_AllExcluded_Skips(t *testing.T) {
+	git := &mockGitRunner{listRefs: []string{"refs/heads/branch-a"}}
+	notif := &mockNotifier{}
+	svc := newTestService([]config.RepoConfig{bidiOverrideRepo()}, makeProviders(), notif, git)
+
+	// C→G full sync인데 branch-a만 존재 → 전부 제외 → push 안 함
+	err := svc.Sync(context.Background(), "example-bidi", EventMeta{})
+	if err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	if len(git.pushCalls) != 0 {
+		t.Errorf("expected no push, got %d", len(git.pushCalls))
+	}
+}
+
+// override 없는 repo의 full-sync는 기존 동작(refspecs nil = --all) 유지.
+func TestDoMirror_FullSync_NoOverrides_UsesAll(t *testing.T) {
+	git := &mockGitRunner{pushChanged: true}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	err := svc.Sync(context.Background(), "bidi-repo", EventMeta{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if git.listRefsCalls != 0 {
+		t.Errorf("no-override full sync should not call ListRefs, got %d", git.listRefsCalls)
+	}
+	if len(git.pushCalls) != 1 || git.pushCalls[0].Refspecs != nil {
+		t.Errorf("expected single --all push (nil refspecs), got %+v", git.pushCalls)
+	}
+}
+
+// 역방향(C→G) branch-a delete 이벤트는 skip되어야 한다(권위 측 브랜치 보호).
+func TestSyncDelete_RefOverride_SkipsReverseDirection(t *testing.T) {
+	git := &mockGitRunner{}
+	notif := &mockNotifier{}
+	svc := newTestService([]config.RepoConfig{bidiOverrideRepo()}, makeProviders(), notif, git)
+
+	// SyncDelete는 source→target = codecommit→gitlab = C→G (override는 G→C만 허용)
+	err := svc.SyncDelete(context.Background(), "example-bidi", "branch", "branch-a")
+	if err != nil {
+		t.Fatalf("expected nil (terminal skip), got %v", err)
+	}
+	if len(git.deleteRefCalls) != 0 {
+		t.Errorf("reverse-direction delete should skip, got %d delete calls", len(git.deleteRefCalls))
+	}
+	if len(notif.messages) != 0 {
+		t.Errorf("skip should not notify, got %+v", notif.messages)
+	}
+}
+
+// override 미매칭 ref의 delete는 정상 진행한다.
+func TestSyncDelete_RefOverride_NonMatchingProceeds(t *testing.T) {
+	git := &mockGitRunner{}
+	notif := &mockNotifier{}
+	svc := newTestService([]config.RepoConfig{bidiOverrideRepo()}, makeProviders(), notif, git)
+
+	err := svc.SyncDelete(context.Background(), "example-bidi", "branch", "branch-b")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(git.deleteRefCalls) != 1 {
+		t.Errorf("non-matching delete should proceed, got %d delete calls", len(git.deleteRefCalls))
+	}
+}
+
+// --- doDeleteRef idempotency (RefExists) tests ---
+
+// 이미 없는 ref 삭제는 성공 no-op으로 끝나야 한다(deleteRef/알림 없음 → 삭제 루프 종료).
+func TestSyncDelete_AbsentRefIdempotentNoop(t *testing.T) {
+	git := &mockGitRunner{refMissing: true}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	err := svc.SyncDelete(context.Background(), "my-repo", "branch", "feature-branch")
+	if err != nil {
+		t.Fatalf("expected nil for absent ref (idempotent), got %v", err)
+	}
+	if len(git.refExistsCalls) != 1 {
+		t.Fatalf("expected 1 RefExists call, got %d", len(git.refExistsCalls))
+	}
+	if len(git.deleteRefCalls) != 0 {
+		t.Errorf("absent ref must not call DeleteRef, got %d", len(git.deleteRefCalls))
+	}
+	if len(notif.messages) != 0 {
+		t.Errorf("idempotent no-op must not notify, got %+v", notif.messages)
+	}
+}
+
+// RefExists 실패는 fail-closed: 에러 반환 + error 알림(인증/네트워크 문제를 드러냄).
+func TestSyncDelete_RefExistsErrorFailsClosed(t *testing.T) {
+	git := &mockGitRunner{refExistsErr: fmt.Errorf("ls-remote auth failed")}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	err := svc.SyncDelete(context.Background(), "my-repo", "branch", "feature-branch")
+	if err == nil {
+		t.Fatal("expected error (fail-closed) on RefExists failure")
+	}
+	if len(git.deleteRefCalls) != 0 {
+		t.Errorf("must not delete when RefExists fails, got %d", len(git.deleteRefCalls))
+	}
+	if len(notif.messages) != 1 || notif.messages[0].Level != "error" {
+		t.Errorf("expected one error notification, got %+v", notif.messages)
+	}
+}
+
+// --- SyncDeleteByTarget tests ---
+
+// target(gitlab) 측 삭제 webhook → source(codecommit) 쪽 ref를 삭제한다.
+func TestSyncDeleteByTarget_TargetMatchDeletesSource(t *testing.T) {
+	git := &mockGitRunner{}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	// bidi-repo: source=codecommit-eu, target=gitlab-main, targetPath=team/bidi-repo
+	err := svc.SyncDeleteByTarget(context.Background(), "gitlab", "team/bidi-repo", "branch", "feature-x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(git.deleteRefCalls) != 1 {
+		t.Fatalf("expected 1 delete, got %d", len(git.deleteRefCalls))
+	}
+	// 삭제는 source(codecommit) 쪽이어야 한다.
+	if !strings.Contains(git.deleteRefCalls[0].URL, "git-codecommit") {
+		t.Errorf("expected delete on codecommit source, got URL %q", git.deleteRefCalls[0].URL)
+	}
+	if len(notif.messages) != 1 || notif.messages[0].Level != "success" {
+		t.Errorf("expected success notification, got %+v", notif.messages)
+	}
+	// Route는 target→source 방향(gitlab→codecommit)을 보여줘야 한다.
+	if !strings.Contains(notif.messages[0].Body, "Route: gitlab/team/bidi-repo → codecommit/bidi-repo") {
+		t.Errorf("expected target→source Route in delete notification, got %q", notif.messages[0].Body)
+	}
+}
+
+// source(codecommit) 측 삭제 webhook → target(gitlab) 쪽 ref를 삭제한다.
+func TestSyncDeleteByTarget_SourceMatchDeletesTarget(t *testing.T) {
+	git := &mockGitRunner{}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	err := svc.SyncDeleteByTarget(context.Background(), "codecommit", "bidi-repo", "branch", "feature-y")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(git.deleteRefCalls) != 1 {
+		t.Fatalf("expected 1 delete, got %d", len(git.deleteRefCalls))
+	}
+	// 삭제는 target(gitlab) 쪽이어야 한다(codecommit이 아님).
+	if strings.Contains(git.deleteRefCalls[0].URL, "git-codecommit") {
+		t.Errorf("expected delete on gitlab target, got codecommit URL %q", git.deleteRefCalls[0].URL)
+	}
+}
+
+// 방향이 허용되지 않으면 에러(my-repo는 source-to-target → target 발 삭제 거부).
+func TestSyncDeleteByTarget_DirectionNotAllowed(t *testing.T) {
+	git := &mockGitRunner{}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	err := svc.SyncDeleteByTarget(context.Background(), "gitlab", "team/my-repo", "branch", "x")
+	if err == nil {
+		t.Fatal("expected error for disallowed target-to-source delete")
+	}
+	if len(git.deleteRefCalls) != 0 {
+		t.Errorf("must not delete on disallowed direction, got %d", len(git.deleteRefCalls))
+	}
+}
+
+// 역방향(C→G) branch-a 삭제는 override에 의해 skip(권위 측 브랜치 보호).
+func TestSyncDeleteByTarget_RefOverrideSkipsReverseDirection(t *testing.T) {
+	git := &mockGitRunner{}
+	notif := &mockNotifier{}
+	svc := newTestService([]config.RepoConfig{bidiOverrideRepo()}, makeProviders(), notif, git)
+
+	// codecommit(source) 발 branch-a 삭제 → source→target(C→G), override는 G→C만 허용 → skip.
+	err := svc.SyncDeleteByTarget(context.Background(), "codecommit", "example-bidi", "branch", "branch-a")
+	if err != nil {
+		t.Fatalf("expected nil (terminal skip), got %v", err)
+	}
+	if len(git.deleteRefCalls) != 0 {
+		t.Errorf("reverse-direction delete should skip, got %d", len(git.deleteRefCalls))
+	}
+}
+
+// 허용 방향(G→C) branch-a 삭제는 진행한다.
+func TestSyncDeleteByTarget_RefOverrideAllowedDirectionProceeds(t *testing.T) {
+	git := &mockGitRunner{}
+	notif := &mockNotifier{}
+	svc := newTestService([]config.RepoConfig{bidiOverrideRepo()}, makeProviders(), notif, git)
+
+	// gitlab(target) 발 branch-a 삭제 → target→source(G→C), override가 허용 → 진행.
+	err := svc.SyncDeleteByTarget(context.Background(), "gitlab", "server/example-bidi", "branch", "branch-a")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(git.deleteRefCalls) != 1 {
+		t.Errorf("allowed-direction delete should proceed, got %d", len(git.deleteRefCalls))
+	}
+}
+
+// override 미매칭 ref(branch-b) 삭제는 정상 진행한다.
+func TestSyncDeleteByTarget_RefOverrideNonMatchingProceeds(t *testing.T) {
+	git := &mockGitRunner{}
+	notif := &mockNotifier{}
+	svc := newTestService([]config.RepoConfig{bidiOverrideRepo()}, makeProviders(), notif, git)
+
+	err := svc.SyncDeleteByTarget(context.Background(), "codecommit", "example-bidi", "branch", "branch-b")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(git.deleteRefCalls) != 1 {
+		t.Errorf("non-matching delete should proceed, got %d", len(git.deleteRefCalls))
+	}
+}
+
+// SyncDeleteByTarget 경로에서도 이미 없는 ref는 멱등 no-op이어야 한다(webhook 진입점 가드).
+func TestSyncDeleteByTarget_AbsentRefIdempotentNoop(t *testing.T) {
+	git := &mockGitRunner{refMissing: true}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	err := svc.SyncDeleteByTarget(context.Background(), "gitlab", "team/bidi-repo", "branch", "gone")
+	if err != nil {
+		t.Fatalf("expected nil for absent ref (idempotent), got %v", err)
+	}
+	if len(git.deleteRefCalls) != 0 {
+		t.Errorf("absent ref must not call DeleteRef, got %d", len(git.deleteRefCalls))
+	}
+	if len(notif.messages) != 0 {
+		t.Errorf("idempotent no-op must not notify, got %+v", notif.messages)
+	}
+}
+
+// 매칭되는 repo가 없으면 에러.
+func TestSyncDeleteByTarget_NoMatch(t *testing.T) {
+	git := &mockGitRunner{}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	err := svc.SyncDeleteByTarget(context.Background(), "gitlab", "nonexistent/repo", "branch", "main")
+	if err == nil {
+		t.Fatal("expected error for no matching repo")
+	}
+}
+
+// 회귀 가드: ref_overrides 없는 repo는 단일 ref 이벤트라도 기존 --all(nil refspecs)을 유지한다.
+func TestDoMirror_NoOverrides_SingleRefEvent_UsesAll(t *testing.T) {
+	git := &mockGitRunner{pushChanged: true}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	// my-repo는 ref_overrides 없음 + meta.Ref 지정 → scoped 아님 → --all
+	err := svc.Sync(context.Background(), "my-repo", EventMeta{Ref: "refs/heads/main"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if git.listRefsCalls != 0 {
+		t.Errorf("no-override repo should not call ListRefs, got %d", git.listRefsCalls)
+	}
+	if len(git.pushCalls) != 1 || git.pushCalls[0].Refspecs != nil {
+		t.Errorf("no-override repo must push with nil refspecs (--all), got %+v", git.pushCalls)
+	}
 }

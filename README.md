@@ -53,6 +53,7 @@ Supports CodeCommit, GitLab, GitHub with any-to-any mirroring via SQS polling an
 - **Any-to-any**: Any provider can mirror to any other provider
 - **Multi-repo**: Configure multiple repositories in a single instance
 - **Bidirectional**: `source-to-target` / `target-to-source` / `bidirectional`
+- **Delete propagation**: A branch/tag deletion on one side propagates to the other (CodeCommit ↔ GitLab/GitHub). Idempotent handling breaks the echo-delete loop.
 - **Loop detection**: Skips notification on no-op push (already up-to-date), preventing redundant alerts in bidirectional sync
 - **Multi-SQS consumer**: Support multiple SQS queues for multi-AWS region/account environments
 - **Dual event sources**: SQS polling (CodeCommit) + HTTP webhooks (GitLab/GitHub)
@@ -171,6 +172,44 @@ repos:
 > If using only `source-to-target` with CodeCommit as source, SQS (EventBridge) triggers automatically — no webhook setup needed.
 >
 > See [docs/ADVANCE.md](docs/ADVANCE.md) for all provider combinations and detailed configuration examples.
+
+<br/>
+
+### Delete Propagation (branches/tags)
+
+Deleting a branch/tag on one side deletes it on the other. The mirror would otherwise propagate only pushes and leave deletes behind, accumulating orphan refs on one side.
+
+- **CodeCommit → target**: EventBridge `referenceDeleted` → SQS → ref deleted on the target (GitLab/GitHub).
+- **target → CodeCommit**: GitLab/GitHub have no dedicated delete webhook event, so the delete is detected from the push payload — GitLab sends a zero-SHA `after`, GitHub sends `deleted: true`. **No extra webhook configuration is needed** (the push events you already receive are enough).
+- **Idempotent handling**: Before deleting, `git ls-remote` checks whether the ref actually exists on the destination; if it is already gone, the operation ends as a successful no-op. This auto-terminates the bidirectional delete loop ("delete A → delete B → B's delete event echoes back to A") on one leg.
+- When a `ref_overrides` entry matches, a delete propagates **only in the allowed direction** (just like a push); a reverse-direction delete is silently skipped — protecting the authoritative side.
+
+<br/>
+
+### Per-ref Direction Pinning (ref_overrides)
+
+In a `bidirectional` repo you can **pin specific refs (branches/tags) to a single direction**. When one side is the clear authority for a branch, this structurally prevents the other side's stale push or accidental delete from overwriting the authoritative copy. The repo as a whole stays bidirectional.
+
+```yaml
+repos:
+  - name: my-repo
+    source: codecommit-eu
+    target: gitlab-main
+    direction: bidirectional          # repo stays bidirectional
+    ref_overrides:
+      - { pattern: "release",   from: gitlab-main, to: codecommit-eu }
+      - { pattern: "release-*", from: gitlab-main, to: codecommit-eu }
+```
+
+- `pattern`: ref short-name glob (`path.Match`). `*` does not cross `/` (`release/*` matches only `release/x`).
+- `from` / `to`: the allowed direction's source/destination provider names. (Provider names are used directly instead of source/target labels to avoid direction confusion.)
+
+**Behavior**:
+- For a matched ref, **events in the opposite direction (push and delete) are silently skipped** (the SQS message is still deleted, so no retries / DLQ).
+- A repo with `ref_overrides` scopes its push to the **triggered ref** (only that ref instead of `--all`). If the triggered ref is absent locally, it is a no-op (no error).
+- A repo **without** `ref_overrides` keeps the original `--all`/`--tags` behavior — fully unaffected.
+
+> **Validation rules**: `from`/`to` must be this repo's source and target, and must differ. For a one-way repo the pinned direction must match the repo direction, and duplicate `pattern`s are rejected.
 
 <br/>
 
