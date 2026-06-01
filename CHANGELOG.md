@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.6.0](https://github.com/somaz94/git-bridge/compare/v0.5.0...v0.6.0) (2026-06-01)
+
+### Features
+
+- add ref_overrides and bidirectional delete propagation ([bd5f5cc](https://github.com/somaz94/git-bridge/commit/bd5f5cc9b1c6c898300eddba4f228b1a37890287))
+
+### Builds
+
+- **deps:** Bump the go-minor group with 4 updates (#12) ([#12](https://github.com/somaz94/git-bridge/pull/12)) ([732dc39](https://github.com/somaz94/git-bridge/commit/732dc39da4f120fd8313692c2444f9af16a1b5b3))
+
+### Continuous Integration
+
+- add concurrency guards to recurring workflows ([e48c3d5](https://github.com/somaz94/git-bridge/commit/e48c3d556177134139a36c0b85018144b2c61afa))
+
+### Contributors
+
+- somaz
+
+<br/>
+
 ## [v0.5.0](https://github.com/somaz94/git-bridge/compare/v0.4.0...v0.5.0) (2026-05-26)
 
 ### Features
