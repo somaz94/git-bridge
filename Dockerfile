@@ -34,7 +34,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 # ---
 # Runtime image (alpine — git CLI is required for mirroring)
-FROM alpine:3.23
+FROM alpine:3.24
 ARG VERSION=dev
 ARG GIT_COMMIT=unknown
 ARG BUILD_DATE=unknown
