@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased (2026-06-23)
+
+### Builds
+
+- **deps:** Bump actions/checkout from 6 to 7 (#16) ([#16](https://github.com/somaz94/git-bridge/pull/16)) ([c0ab26b](https://github.com/somaz94/git-bridge/commit/c0ab26b7a150d9384d35db71addcee92c867d6d2))
+- **deps:** Bump the go-minor group with 4 updates (#15) ([#15](https://github.com/somaz94/git-bridge/pull/15)) ([f5f0688](https://github.com/somaz94/git-bridge/commit/f5f06885cbf95a14805df8049a4a4658524f890c))
+- **deps:** Bump alpine from 3.23 to 3.24 in the docker-minor group (#14) ([#14](https://github.com/somaz94/git-bridge/pull/14)) ([ed1ba63](https://github.com/somaz94/git-bridge/commit/ed1ba636ed1c2e98ac8e8adad48e8dd0512af630))
+- **deps:** Bump the go-minor group with 4 updates (#13) ([#13](https://github.com/somaz94/git-bridge/pull/13)) ([950da4c](https://github.com/somaz94/git-bridge/commit/950da4c8e79f06ece258ef69221f0db497c48d52))
+
+### Continuous Integration
+
+- add DCO check via shared reusable workflow ([d4b0ef4](https://github.com/somaz94/git-bridge/commit/d4b0ef4bcb984f91b384a57622583abab253b17e))
+
+### Contributors
+
+- somaz
+
+<br/>
+
 ## [v0.6.0](https://github.com/somaz94/git-bridge/compare/v0.5.0...v0.6.0) (2026-06-01)
 
 ### Features
