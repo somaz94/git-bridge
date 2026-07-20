@@ -2,10 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased (2026-06-23)
+## Unreleased (2026-07-20)
+
+### Bug Fixes
+
+- warn when bump-version.sh finds no version to replace ([9a895d9](https://github.com/somaz94/git-bridge/commit/9a895d91afd1dcc37b50f30538402363d48db07d))
 
 ### Builds
 
+- **deps:** Bump actions/setup-go from 6 to 7 (#19) ([#19](https://github.com/somaz94/git-bridge/pull/19)) ([3b1d059](https://github.com/somaz94/git-bridge/commit/3b1d0596af9e47b5aa1099ae64de18c10bcd0c90))
+- **deps:** Bump the go-minor group with 3 updates (#20) ([#20](https://github.com/somaz94/git-bridge/pull/20)) ([f1b745b](https://github.com/somaz94/git-bridge/commit/f1b745baf77711c5b002b3627cbe6acb093aecda))
+- **deps:** Bump the go-minor group with 3 updates (#18) ([#18](https://github.com/somaz94/git-bridge/pull/18)) ([9a4e934](https://github.com/somaz94/git-bridge/commit/9a4e934c51473586009a71de7573180b2d6d10d1))
+- **deps:** Bump the go-minor group with 4 updates (#17) ([#17](https://github.com/somaz94/git-bridge/pull/17)) ([caed80a](https://github.com/somaz94/git-bridge/commit/caed80a9e437e12ea2c5a0c512f5397d44f5ecba))
 - **deps:** Bump actions/checkout from 6 to 7 (#16) ([#16](https://github.com/somaz94/git-bridge/pull/16)) ([c0ab26b](https://github.com/somaz94/git-bridge/commit/c0ab26b7a150d9384d35db71addcee92c867d6d2))
 - **deps:** Bump the go-minor group with 4 updates (#15) ([#15](https://github.com/somaz94/git-bridge/pull/15)) ([f5f0688](https://github.com/somaz94/git-bridge/commit/f5f06885cbf95a14805df8049a4a4658524f890c))
 - **deps:** Bump alpine from 3.23 to 3.24 in the docker-minor group (#14) ([#14](https://github.com/somaz94/git-bridge/pull/14)) ([ed1ba63](https://github.com/somaz94/git-bridge/commit/ed1ba636ed1c2e98ac8e8adad48e8dd0512af630))
@@ -13,6 +21,14 @@ All notable changes to this project will be documented in this file.
 
 ### Continuous Integration
 
+- remove DCO workflow ([f9a11aa](https://github.com/somaz94/git-bridge/commit/f9a11aab4d2a7cb34683ac603efdeeac00ce664d))
+- adopt semantic-pr, labels, lock-threads, PR size, and auto-assign reusables ([87d0b7d](https://github.com/somaz94/git-bridge/commit/87d0b7d418f025d9af346ffd4eba89c7bb05883d))
+- use reusable stale-issues workflow ([1005aa3](https://github.com/somaz94/git-bridge/commit/1005aa31c6bd1067d5b1eb1d0a364a0b0c9e082c))
+- use reusable issue-greeting workflow ([eb2a54c](https://github.com/somaz94/git-bridge/commit/eb2a54c574a4c9142c8a93e18b199ba987010124))
+- use reusable dependabot-auto-merge workflow ([bdb5bf2](https://github.com/somaz94/git-bridge/commit/bdb5bf2288f607f37bf064d2ac9ff77dc1dd4c11))
+- use reusable contributors workflow ([f35acb9](https://github.com/somaz94/git-bridge/commit/f35acb961d8e7bb702c915e5a6f7d73682355420))
+- add ok-to-test workflow stub ([4f5077e](https://github.com/somaz94/git-bridge/commit/4f5077ea2a82f2f11834b071a05a9daf55e55702))
+- add PR welcome workflow stub ([b43c8b0](https://github.com/somaz94/git-bridge/commit/b43c8b04ea0c4cde6b417ab5a3ef5a820e92c3e2))
 - add DCO check via shared reusable workflow ([d4b0ef4](https://github.com/somaz94/git-bridge/commit/d4b0ef4bcb984f91b384a57622583abab253b17e))
 
 ### Contributors
