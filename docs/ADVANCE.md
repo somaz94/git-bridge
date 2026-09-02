@@ -18,6 +18,7 @@ This guide covers various mirroring scenarios with complete configuration exampl
 - [Scenario 7: GitHub → CodeCommit (one-way)](#scenario-7-github--codecommit-one-way)
 - [Scenario 8: GitHub ↔ GitLab (bidirectional)](#scenario-8-github--gitlab-bidirectional)
 - [How Webhook Matching Works](#how-webhook-matching-works)
+- [Other Config Keys](#other-config-keys)
 - [Multi-Repo Configuration](#multi-repo-configuration)
 - [Multi-Provider Configuration](#multi-provider-configuration)
 - [Multi-SQS Consumer (Multi-AWS Environment)](#multi-sqs-consumer-multi-aws-environment)
@@ -80,7 +81,29 @@ consumers:
     credentials:
       access_key: "${SQS_EU_ACCESS_KEY}"
       secret_key: "${SQS_EU_SECRET_KEY}"
+    # Optional. Defaults to mirror.timeout_seconds; must not be lower.
+    visibility_timeout_seconds: 600
 ```
+
+<br/>
+
+### `visibility_timeout_seconds`
+
+How long a received message stays hidden from other consumers while it is being
+handled. It defaults to `mirror.timeout_seconds` and startup fails if it is set
+lower — a shorter window is not a tuning choice, it is a correctness bug:
+
+1. A sync that outlives the window makes its message visible again.
+2. The message is redelivered while the original is still running.
+3. The redelivered copy blocks on the per-repo mutex, then times out too.
+4. After `maxReceiveCount` retries the message lands in the DLQ, even though the
+   first sync may have succeeded.
+
+A batch of up to 10 messages is handled **serially** and the window starts for
+all of them at `ReceiveMessage`, so the last message in a full batch carries the
+processing time of the nine before it. Raise this well above
+`mirror.timeout_seconds` when a queue regularly delivers full batches of slow
+repositories. SQS caps it at 43200 (12 hours).
 
 <br/>
 
@@ -341,11 +364,13 @@ repos:
 
 ## How Webhook Matching Works
 
-When a webhook event arrives, `SyncByTarget` uses a two-pass matching strategy:
+When a webhook event arrives, `SyncByTarget` walks the configured repos once and, for each repo, checks the target side before the source side:
 
 1. **Target match**: Check if the incoming provider matches the repo's **target** provider and `target_path`. If matched and direction allows `target-to-source`, sync from target → source.
 
 2. **Source match**: Check if the incoming provider matches the repo's **source** provider and `source_path`. If matched and direction allows `source-to-target`, sync from source → target.
+
+Both checks happen inside the same loop iteration, so a repo whose target matches never has its source checked — the target side wins on that repo, not across the whole list. The first repo that matches either way returns, and if none matches the call errors with `no matching repo for provider=... path=...`.
 
 This means any webhook event is automatically routed to the correct sync direction regardless of whether the provider is configured as source or target.
 
@@ -366,6 +391,93 @@ This means any webhook event is automatically routed to the correct sync directi
 |-------|-------------|-------|---------------|
 | Push to GitHub `org/web-app` | `SyncByTarget("github", "org/web-app", meta)` | Source match | GitHub → GitLab |
 | Push to GitLab `team/web-app` | `SyncByTarget("gitlab", "team/web-app", meta)` | Target match | GitLab → GitHub |
+
+<br/>
+
+## Other Config Keys
+
+The scenarios above only use `providers` / `repos` / `consumers`. These remaining
+keys are what the rest of the behavior is tuned with. Fully commented versions of
+all of them live in [examples/config.yaml](../examples/config.yaml) and
+[examples/configmap.yaml](../examples/configmap.yaml).
+
+<br/>
+
+### `server`
+
+```yaml
+server:
+  port: 8080
+  console_port: 8081
+  api_docs_url: "https://git-bridge.example.com/api-docs"
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `port` | `8080` | The public listener. The HTTPRoute forwards here, and it serves health, the webhooks, the retry API, `/api-docs` and `/openapi.json` |
+| `console_port` | `8081` | A separate listener that serves **only** the console. It must differ from `port`: the console handlers are simply not registered on the public mux, and that separation is the whole guard keeping the console off the internet. This value and the deployment's `containerPort` / Service port have to move together — changing one alone either closes the console or opens it publicly |
+| `api_docs_url` | *(empty)* | Where the console's API-docs link points. It must be an **absolute** URL: the docs are served on `port` while the portal proxies only `console_port`, so a relative path would resolve against the console listener and 404. Empty hides the link instead of rendering a dead one |
+
+<br/>
+
+### `mirror`
+
+```yaml
+mirror:
+  timeout_seconds: 600
+  drain_timeout_seconds: 120
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `timeout_seconds` | `300` | Budget for **one whole sync** (clone/fetch **plus** push share this single deadline — it is not applied per git command). On expiry the git child is SIGKILLed (`signal: killed`) and the sync is reported as failed. Raise it for large repos whose full clone approaches the limit. It is also the floor for `visibility_timeout_seconds` |
+| `drain_timeout_seconds` | `120` | On SIGTERM the service stops accepting new work, then waits at most this long for syncs already in flight before killing them. It is a cap, not a delay — shutdown returns as soon as the work does. Keep the pod's `terminationGracePeriodSeconds` **above** it, or the kubelet SIGKILLs mid-drain and the wait buys nothing. A sync killed mid-fetch can leave a pack `.keep` marker behind, which excludes that packfile from every later repack until housekeeping prunes it |
+
+<br/>
+
+### Per-repo options
+
+A webhook is dispatched by **provider name**, so `(name, path)` is the routing key and
+`SyncByTarget` / `SyncDeleteByTarget` return on the first match. Validation therefore refuses to
+start on any config where two sides resolve to the same `(name, path)` — whether that is two
+different entries, or the two sides of a single entry — because the later one could never run.
+Different providers may share a path freely, including two instances of the same type.
+
+The route only carries the provider *type*, so the name comes from the payload: the handler
+matches `project.web_url`'s host against the providers' `base_url` hosts. When that fails — no
+`base_url`, no `web_url` in the payload, an unknown host, or two providers on the same host — it
+falls back to matching by type and logs `dispatching by provider type`. Under that fallback
+first-match applies again, so two same-type instances sharing a path can invert direction; see
+`docs/gitlab-to-gitlab-mirror.md` constraint 1.
+
+Beyond `name` / `source` / `target` / `source_path` / `target_path` / `direction`,
+each entry in `repos` accepts:
+
+```yaml
+repos:
+  - name: web-app
+    source: codecommit-eu
+    target: gitlab-main
+    source_path: web-app
+    target_path: frontend/web-app
+    direction: bidirectional
+    retry_direction: target-to-source
+    ref_overrides:
+      - { pattern: "release",   from: gitlab-main, to: codecommit-eu }
+      - { pattern: "release-*", from: gitlab-main, to: codecommit-eu }
+    slack_webhook_url: "${WEB_APP_SLACK_WEBHOOK_URL}"
+```
+
+| Key | Description |
+|-----|-------------|
+| `retry_direction` | Overrides how `"auto"` resolves for this repo on the retry API. Accepts `source-to-target` or `target-to-source`. Unset, `"auto"` falls back to `target-to-source` on a bidirectional repo. An explicit `direction` in the API call always beats this pin, and on a one-way repo it must match the repo's `direction` |
+| `ref_overrides` | Pins specific refs to a single `from` → `to` provider direction while the repo stays bidirectional. `pattern` is a ref **short-name** glob (`path.Match`, so `*` does not cross `/`); `from` / `to` are provider map keys, not the `source`/`target` labels. Events in the opposite direction for a matched ref are silently skipped — the SQS message is still deleted, so no retries or DLQ churn. Matching is first-match in declaration order. Validation: `from` != `to`, both must be this repo's source and target, and duplicate patterns are rejected |
+| `slack_webhook_url` | Routes every Slack notification for this repo (webhook, SQS, cron and retry triggered alike) to this URL instead of `notification.slack.webhook_url`. Useful for sending a test repo's traffic to a separate channel. Empty or unset falls back to the default |
+
+> Push scoping is **not** controlled by `ref_overrides`. An event that names a ref
+> narrows the push to that ref alone regardless of whether this repo declares
+> overrides; only a ref-less trigger (a full sync, or the hourly reconcile cron)
+> pushes broadly. See the `ref_overrides` section of the README for the full rule.
 
 <br/>
 
@@ -432,6 +544,8 @@ consumers:
     credentials:
       access_key: "${SQS_EU_ACCESS_KEY}"
       secret_key: "${SQS_EU_SECRET_KEY}"
+    # Optional. Defaults to mirror.timeout_seconds; must not be lower.
+    visibility_timeout_seconds: 600
 ```
 
 <br/>
@@ -466,9 +580,23 @@ SQS_EU_QUEUE_URL, SQS_EU_REGION, SQS_EU_ACCESS_KEY, SQS_EU_SECRET_KEY
 # Webhook Secrets (optional)
 WEBHOOK_GITLAB_SECRET, WEBHOOK_GITHUB_SECRET
 
+# Retry API — effectively required. Empty disables POST /retry/mirror entirely
+# (404), and the reconcile CronJob drives that endpoint with this token.
+RETRY_API_TOKEN
+
 # Notifications (optional)
 SLACK_WEBHOOK_URL
+
+# Per-repo Slack channel override (optional) — referenced as ${...} from
+# repos[].slack_webhook_url, e.g. DEMO_REPO_SLACK_WEBHOOK_URL. Empty or unset
+# falls back to SLACK_WEBHOOK_URL.
+<REPO>_SLACK_WEBHOOK_URL
 ```
+
+> Only the provider and consumer variables follow the `<TYPE>_<NAME>_<FIELD>`
+> pattern. The webhook secrets, `RETRY_API_TOKEN`, `SLACK_WEBHOOK_URL` and the
+> per-repo override sit outside it — see
+> [naming-convention.md](naming-convention.md).
 
 <br/>
 

@@ -17,13 +17,12 @@ import (
 )
 
 const (
-	sqsMaxMessages       = 10
-	sqsWaitTimeSeconds   = 20
-	sqsVisibilityTimeout = 120
-	sqsErrorRetryDelay   = 5 * time.Second
+	sqsMaxMessages     = 10
+	sqsWaitTimeSeconds = 20
+	sqsErrorRetryDelay = 5 * time.Second
 
-	eventReferenceDeleted = "referenceDeleted" // CodeCommit ref 삭제 이벤트 타입
-	refTypeTag            = "tag"              // ref 종류 라벨(태그)
+	eventReferenceDeleted = "referenceDeleted" // the CodeCommit event type for a ref deletion
+	refTypeTag            = "tag"              // the ref-kind label for a tag
 	refsTagsPrefix        = "refs/tags/"
 	refsHeadsPrefix       = "refs/heads/"
 )
@@ -56,6 +55,9 @@ type SQS struct {
 	client    sqsClient
 	queueURL  string
 	mirrorSvc Syncer
+	// visibilityTimeout hides a received message from other consumers while the
+	// batch is handled. config guarantees it is at least mirror.timeout_seconds.
+	visibilityTimeout int32
 }
 
 // NewSQS creates a new SQS consumer.
@@ -85,34 +87,43 @@ func NewSQS(cfg config.ConsumerConfig, mirrorSvc Syncer) (*SQS, error) {
 	}
 
 	return &SQS{
-		name:      name,
-		client:    sqs.NewFromConfig(awsCfg),
-		queueURL:  cfg.QueueURL,
-		mirrorSvc: mirrorSvc,
+		name:              name,
+		client:            sqs.NewFromConfig(awsCfg),
+		queueURL:          cfg.QueueURL,
+		mirrorSvc:         mirrorSvc,
+		visibilityTimeout: int32(cfg.VisibilityTimeoutSeconds),
 	}, nil
 }
 
 // Start begins long-polling the SQS queue.
-func (s *SQS) Start(ctx context.Context) {
+// Start polls until pollCtx is cancelled.
+//
+// work is a separate context for the mirroring a message triggers, and the two
+// are not interchangeable. Cancelling pollCtx means "stop taking new messages";
+// the message already being handled keeps running under work so shutdown can
+// let it finish rather than killing its git command mid-fetch. Start does not
+// return until that message is done, which is what makes waiting on it a real
+// drain.
+func (s *SQS) Start(pollCtx, work context.Context) {
 	slog.Info("SQS consumer started", "name", s.name, "queue", s.queueURL)
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-pollCtx.Done():
 			slog.Info("SQS consumer stopped", "name", s.name)
 			return
 		default:
-			s.poll(ctx)
+			s.poll(pollCtx, work)
 		}
 	}
 }
 
-func (s *SQS) poll(ctx context.Context) {
+func (s *SQS) poll(ctx, work context.Context) {
 	result, err := s.client.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 		QueueUrl:            &s.queueURL,
 		MaxNumberOfMessages: sqsMaxMessages,
 		WaitTimeSeconds:     sqsWaitTimeSeconds,
-		VisibilityTimeout:   sqsVisibilityTimeout,
+		VisibilityTimeout:   s.visibilityTimeout,
 	})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -124,7 +135,7 @@ func (s *SQS) poll(ctx context.Context) {
 	}
 
 	for _, msg := range result.Messages {
-		s.handleMessage(ctx, msg)
+		s.handleMessage(work, msg)
 	}
 }
 
@@ -154,7 +165,7 @@ func (s *SQS) handleMessage(ctx context.Context, msg types.Message) {
 	if eventType == eventReferenceDeleted {
 		err = s.mirrorSvc.SyncDelete(ctx, repo, refType, ref)
 	} else {
-		err = s.mirrorSvc.Sync(ctx, repo, mirror.EventMeta{Ref: fullRef})
+		err = s.mirrorSvc.Sync(ctx, repo, mirror.EventMeta{Ref: fullRef, Source: mirror.SourceSQS})
 	}
 
 	if err != nil {

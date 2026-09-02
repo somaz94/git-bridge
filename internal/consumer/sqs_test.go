@@ -94,7 +94,7 @@ func makeSQSMessage(id, body string) sqstypes.Message {
 	}
 }
 
-func newTestSQSConsumer(mock *mockSQSClient, syncer *mockSyncer) *SQS {
+func newTestSQSConsumer(mock *mockSQSClient, syncer Syncer) *SQS {
 	return &SQS{
 		name:      "test",
 		client:    mock,
@@ -196,7 +196,7 @@ func TestPoll_ProcessesMessages(t *testing.T) {
 	}
 	s := newTestSQSConsumer(mock, syncer)
 
-	s.poll(context.Background())
+	s.poll(context.Background(), context.Background())
 
 	if len(syncer.syncCalls) != 2 {
 		t.Errorf("expected 2 sync calls, got %d", len(syncer.syncCalls))
@@ -216,7 +216,7 @@ func TestPoll_ReceiveError(t *testing.T) {
 	s := newTestSQSConsumer(mock, syncer)
 
 	// Should not panic; just log and return (sleep skipped in test due to short context)
-	s.poll(context.Background())
+	s.poll(context.Background(), context.Background())
 
 	if len(syncer.syncCalls) != 0 {
 		t.Error("should not sync on receive error")
@@ -234,7 +234,7 @@ func TestPoll_ContextCancelled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	s.poll(ctx)
+	s.poll(ctx, ctx)
 
 	if len(syncer.syncCalls) != 0 {
 		t.Error("should not sync when context is cancelled")
@@ -250,7 +250,7 @@ func TestPoll_EmptyMessages(t *testing.T) {
 	}
 	s := newTestSQSConsumer(mock, syncer)
 
-	s.poll(context.Background())
+	s.poll(context.Background(), context.Background())
 
 	if len(syncer.syncCalls) != 0 {
 		t.Error("should not sync with no messages")
@@ -273,7 +273,7 @@ func TestStart_StopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	s.Start(ctx)
+	s.Start(ctx, ctx)
 
 	if pollCount == 0 {
 		t.Error("expected at least one poll before context cancellation")
@@ -507,5 +507,50 @@ func TestHandleMessage_DeleteEvent_NoSyncMeta(t *testing.T) {
 	}
 	if len(syncer.deleteCalls) != 1 {
 		t.Errorf("expected 1 delete call, got %d", len(syncer.deleteCalls))
+	}
+}
+
+// ctxRecordingSyncer captures the context its sync was handed.
+type ctxRecordingSyncer struct {
+	gotErr error
+}
+
+func (c *ctxRecordingSyncer) Sync(ctx context.Context, _ string, _ mirror.EventMeta) error {
+	c.gotErr = ctx.Err()
+	return nil
+}
+
+func (c *ctxRecordingSyncer) SyncDelete(ctx context.Context, _, _, _ string) error {
+	c.gotErr = ctx.Err()
+	return nil
+}
+
+// Polling and mirroring get separate contexts on purpose. Cancelling the poll
+// context means "stop taking new messages"; the message already in hand must
+// keep running under the work context, or shutdown kills its git command
+// mid-fetch. Sharing one context is what made SIGTERM strand a pack .keep
+// marker.
+func TestPollHandlesTheMessageOnTheWorkContextNotThePollContext(t *testing.T) {
+	syncer := &ctxRecordingSyncer{}
+	mock := &mockSQSClient{
+		receiveFunc: func(context.Context, *sqs.ReceiveMessageInput, ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
+			return &sqs.ReceiveMessageOutput{
+				Messages: []sqstypes.Message{
+					makeSQSMessage("msg-a", makeEvent("repo-a", "refs/heads/main")),
+				},
+			}, nil
+		},
+	}
+	s := newTestSQSConsumer(mock, syncer)
+
+	// The poll context is already done — the state shutdown puts it in — while
+	// the work context is still open.
+	pollCtx, cancelPoll := context.WithCancel(context.Background())
+	cancelPoll()
+
+	s.poll(pollCtx, context.Background())
+
+	if syncer.gotErr != nil {
+		t.Errorf("sync received a cancelled context (%v), want the live work context", syncer.gotErr)
 	}
 }

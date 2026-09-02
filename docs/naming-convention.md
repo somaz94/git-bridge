@@ -1,6 +1,8 @@
 # Naming Convention
 
-All environment variables and config keys in git-bridge follow a consistent naming pattern to support multi-provider and multi-consumer configurations.
+git-bridge's **provider and consumer** environment variables follow a consistent naming pattern, so that multi-provider and multi-consumer setups can be described without touching Go code.
+
+The pattern covers exactly the variables that are per-instance. Service-wide settings and per-repo overrides are outside it — see [Variables outside the pattern](#variables-outside-the-pattern).
 
 <br/>
 
@@ -30,6 +32,10 @@ All environment variables and config keys in git-bridge follow a consistent nami
 <br/>
 
 ## Full Reference
+
+The reference below is the **complete set of variables that follow the pattern**.
+Everything else the service reads is listed in
+[Variables outside the pattern](#variables-outside-the-pattern).
 
 <br/>
 
@@ -79,6 +85,34 @@ providers:
     type: github
     ...
 ```
+
+<br/>
+
+## Variables Outside the Pattern
+
+Not every variable is per-instance, so not every variable has a `<TYPE>_<NAME>_<FIELD>`
+shape. These are deliberately outside it — there is one of each per service, so
+there is no `<NAME>` to put in the middle:
+
+| Variable | Config key | Note |
+|----------|-----------|------|
+| `WEBHOOK_GITLAB_SECRET` | `webhook.gitlab_secret` | One secret per service, not per GitLab provider |
+| `WEBHOOK_GITHUB_SECRET` | `webhook.github_secret` | Same, for the HMAC secret |
+| `RETRY_API_TOKEN` | `retry.api_token` | Bearer token for `POST /retry/mirror`; empty disables the endpoint (404) |
+| `SLACK_WEBHOOK_URL` | `notification.slack.webhook_url` | The default notification channel |
+| `CONFIG_PATH` | — | Read directly from the environment, not from the config file |
+| `WORK_DIR` | — | Same |
+
+One variable is per-**repo** rather than per-provider, and so uses the repo name
+as its prefix instead:
+
+| Variable | Config key | Note |
+|----------|-----------|------|
+| `<REPO>_SLACK_WEBHOOK_URL` | `repos[].slack_webhook_url` | Per-repo channel override, referenced as `${...}` (e.g. `DEMO_REPO_SLACK_WEBHOOK_URL` for the `demo-repo` repo). Empty or unset falls back to `SLACK_WEBHOOK_URL` |
+
+The `<REPO>` prefix is a convention, not something the code parses — the name is
+resolved only through the `${...}` reference in the config, so any variable name
+works. Matching it to the repo name is what keeps the Secret readable.
 
 <br/>
 

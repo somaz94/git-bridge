@@ -12,7 +12,7 @@ git-bridge has two sync triggers:
 | Trigger | Automatic retry policy |
 |---|---|
 | **HTTP webhook** (`POST /webhook/gitlab`, `POST /webhook/github`) | None. Single-shot — on failure, only the user / Slack are notified |
-| **SQS event consumer** (CodeCommit → SQS path) | visibility timeout(120s) + max receive count(5), then DLQ |
+| **SQS event consumer** (CodeCommit → SQS path) | visibility timeout (the consumer's `visibility_timeout_seconds`, defaulting to `mirror.timeout_seconds` — 600s in dev) + max receive count(5), then DLQ |
 
 **If external I/O fails transiently at the webhook moment, the ref is stuck:**
 
@@ -22,23 +22,25 @@ git-bridge has two sync triggers:
 
 Note that `Sync()` itself is an **incremental fetch + push**. If even one later push lands, all missed refs catch up together. The problem is *when no later push happens*.
 
+> **It is not stuck indefinitely, though** — the `git-bridge-reconcile` CronJob re-syncs every bidirectional repo in both directions on the hour (`0 * * * *`, KST), so a lost webhook is backfilled automatically **within an hour**. The "no startup reconcile" point above still holds (a pod restart does not recover it), but recovery does not have to be started by a human. The manual procedures below are for catching up immediately instead of waiting out that hour.
+
 <br/>
 
 ## 2. Case study — 2026-05-19 incident
 
 ### 2-1. Symptom
 
-The gitlab → codecommit (eu-central-1) mirror for `my-repo` failed for 8m 43s. Two tag pushes got stuck:
+The gitlab → codecommit (eu-central-1) mirror for `demo-repo` failed for 8m 43s. Two tag pushes got stuck:
 
 - `refs/tags/Test-C-Build-1916` (push at 07:24:00, failed at 07:26:33)
-- `refs/tags/Build-2231` (push at 07:24:20, failed at 07:34:40 — git process SIGKILL after 8 min)
+- `refs/tags/Test-Build-2231` (push at 07:24:20, failed at 07:34:40 — git process SIGKILL after 8 min)
 
 Error pattern:
 
 ```
 ERROR  SQS receive error    name=sqs-eu    error=...net/http: TLS handshake timeout
 ERROR  mirror sync failed   ref=Test-C-Build-1916         error=Recv failure: Connection reset by peer
-ERROR  mirror sync failed   ref=Build-2231   error=signal: killed: ...Recv failure: Connection reset by peer
+ERROR  mirror sync failed   ref=Test-Build-2231   error=signal: killed: ...Recv failure: Connection reset by peer
 ```
 
 Two unrelated AWS services in the same region (SQS + CodeCommit, both eu-central-1) failed at the same minute → AWS region transient or a brief Korea↔eu Internet path drop.
@@ -68,7 +70,7 @@ Since no automatic recovery exists, we fire the webhook payload manually:
 SECRET=$(kubectl -n git-bridge get secret git-bridge-secret \
   -o jsonpath='{.data.WEBHOOK_GITLAB_SECRET}' | base64 -d)
 
-PAYLOAD='{"event_name":"push","user_name":"manual-retry","ref":"refs/tags/Build-2231","repository":{"name":"my-repo"},"project":{"path_with_namespace":"team/my-repo"}}'
+PAYLOAD='{"event_name":"push","user_name":"manual-retry","ref":"refs/tags/Test-Build-2231","repository":{"name":"demo-repo"},"project":{"path_with_namespace":"team/demo-repo"}}'
 
 kubectl -n git-bridge exec git-bridge-<podname> -- sh -c "
   wget -qO- --post-data='$PAYLOAD' \
@@ -82,7 +84,7 @@ kubectl -n git-bridge exec git-bridge-<podname> -- sh -c "
 Result (07:51:24 → 07:51:35, 11.5s):
 
 ```
-INFO  received gitlab push event   ref=refs/tags/Build-2231   pusher=manual-retry
+INFO  received gitlab push event   ref=refs/tags/Test-Build-2231   pusher=manual-retry
 INFO  fetching from source (incremental)
 INFO  pushing to target
 INFO  mirror sync done             duration=11.506315182s
@@ -114,9 +116,9 @@ SECRET=$(kubectl -n git-bridge get secret git-bridge-secret \
 # (3) Build the payload — only 4 fields are required
 #   - event_name: "push"
 #   - ref: the failed ref (one — the latest — is enough; incremental catches up older ones)
-#   - repository.name: short repo name (e.g. "my-repo")
+#   - repository.name: short repo name (e.g. "demo-repo")
 #   - project.path_with_namespace: must match target_path or source_path in git-bridge config
-#                                  (e.g. "team/my-repo")
+#                                  (e.g. "team/demo-repo")
 PAYLOAD='{"event_name":"push","user_name":"manual-retry","ref":"refs/tags/<TAG_OR_BRANCH>","repository":{"name":"<REPO>"},"project":{"path_with_namespace":"<NAMESPACE/REPO>"}}'
 
 # (4) POST — use pod loopback (the external host git-bridge.example.com is internal-only;
@@ -131,7 +133,7 @@ kubectl -n git-bridge exec "$POD" -- sh -c "
 # Expected response: {"status":"accepted"}
 
 # (5) Verify
-kubectl -n git-bridge logs "$POD" --since=2m | grep -E "my-repo|mirror sync"
+kubectl -n git-bridge logs "$POD" --since=2m | grep -E "demo-repo|mirror sync"
 # → "mirror sync done" means success. Slack gets the same notification as a normal webhook.
 ```
 
@@ -154,7 +156,7 @@ SQS itself has retry + DLQ, so usually no action is needed:
 
 | Stage | Behavior |
 |---|---|
-| 1st failure | After visibility timeout(120s) the message returns to the queue |
+| 1st failure | After the visibility timeout (`visibility_timeout_seconds`, 600s in dev) the message returns to the queue |
 | 2nd–5th failure | Retried the same way |
 | Beyond 5 | Moved to DLQ |
 
@@ -177,11 +179,11 @@ curl -X POST https://git-bridge.example.com/retry/mirror \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "repo": "my-repo",
+    "repo": "demo-repo",
     "direction": "target-to-source",
-    "ref": "refs/tags/Build-2231"
+    "ref": "refs/tags/Test-Build-2231"
   }'
-# Expected response: {"status":"accepted","repo":"my-repo",...,"queued_at":"..."}
+# Expected response: {"status":"accepted","repo":"demo-repo",...,"queued_at":"..."}
 
 # (3) The Slack notification body carries a "Source: retry-api" line so on-call
 #     can immediately distinguish manual retries from regular webhook syncs.
@@ -210,7 +212,7 @@ Full spec: [docs/API.md `POST /retry/mirror`](./API.md#post-retrymirror).
 
 ### 3-6. Why external POST to `git-bridge.example.com` fails
 
-`git-bridge.example.com` resolves only on the internal DNS (corp / iptime). Workstations outside the corp network fail at the connect stage. Use cluster-internal access (pod / service ClusterIP) or the corp network.
+`git-bridge.example.com` resolves only on the internal DNS. Workstations outside the corp network fail at the connect stage. Use cluster-internal access (pod / service ClusterIP) or the corp network.
 
 From inside the corp network, an external POST works:
 
@@ -277,7 +279,7 @@ A dedicated retry API would give us:
 
 <br/>
 
-### 4-2. Candidate endpoint design (TBD)
+### 4-old-2. Candidate endpoint design (TBD)
 
 ```http
 POST /retry/mirror
@@ -285,9 +287,9 @@ Authorization: Bearer <RETRY_API_TOKEN>
 Content-Type: application/json
 
 {
-  "repo": "my-repo",
+  "repo": "demo-repo",
   "direction": "source-to-target",   // or "target-to-source", "auto"
-  "ref": "refs/tags/Build-2231"   // when omitted, only incremental fetch
+  "ref": "refs/tags/Test-Build-2231"   // when omitted, only incremental fetch
 }
 ```
 
@@ -296,8 +298,8 @@ Response:
 ```json
 {
   "status": "accepted",
-  "repo": "my-repo",
-  "ref": "refs/tags/Build-2231",
+  "repo": "demo-repo",
+  "ref": "refs/tags/Test-Build-2231",
   "queued_at": "2026-05-19T07:51:24Z"
 }
 ```
@@ -313,7 +315,7 @@ Response:
 
 <br/>
 
-### 4-3. Implementation sketch
+### 4-old-3. Implementation sketch
 
 #### Code locations
 
@@ -335,17 +337,17 @@ Response:
 
 <br/>
 
-### 4-4. Optional CLI helper
+### 4-old-4. Optional CLI helper
 
 ```bash
-git-bridge-retry --repo my-repo --ref refs/tags/Build-2231
+git-bridge-retry --repo demo-repo --ref refs/tags/Test-Build-2231
 ```
 
 Reads `RETRY_API_TOKEN` from the environment and calls the endpoint. Add under `cmd/` or as a separate small repo.
 
 <br/>
 
-### 4-5. Open decisions
+### 4-old-5. Open decisions
 
 | Item | Options | Tentative preference |
 |---|---|---|
@@ -364,7 +366,7 @@ Reads `RETRY_API_TOKEN` from the environment and calls the endpoint. Add under `
 |---|---|
 | Pod naming | `git-bridge-<rs>-<pod>` (Deployment, replicas=1, Recreate strategy) |
 | Service | `git-bridge.git-bridge.svc.cluster.local:80` (ClusterIP, 80 → container 8080) |
-| External hosts (corp-only) | `git-bridge.example.com`, `git-bridge.example.org` (both attached to the HTTPRoute) |
+| External hosts (corp-only) | `git-bridge.example.com` (attached to the HTTPRoute) |
 | Webhook secret | k8s secret `git-bridge-secret`, keys `WEBHOOK_GITLAB_SECRET` / `WEBHOOK_GITHUB_SECRET` |
 | Config | k8s configmap `git-bridge-config`, key `config.yaml` |
 | Failure alerting | Slack webhook (`SLACK_WEBHOOK_URL`) — messages starting with `:x: Mirror Sync Failed:` |

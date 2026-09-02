@@ -51,7 +51,7 @@ Do not select "Send me everything" — Git-Bridge only processes push events and
 ### 4. Save and Test
 
 1. Click **Add webhook**
-2. GitHub will send a `ping` event automatically (Git-Bridge will return 400 for ping — this is expected)
+2. GitHub will send a `ping` event automatically. Git-Bridge answers it with **200 `{"status":"accepted"}`** — the handler never inspects `X-GitHub-Event`, and a ping payload is valid JSON carrying `repository`, so it parses like a push with an empty `ref`. That means the ping also kicks off a background sync for the matching repo (a full `--all` sync, since no ref is named); if no repo matches the payload's `full_name`, the sync ends in the log with `no matching repo for provider=...` and nothing is mirrored. Either way the delivery shows 200, not 400
 3. Push a commit to the repository to trigger a real push event
 4. Go to **Settings > Webhooks > (your webhook) > Recent Deliveries** to verify HTTP 200 response
 
@@ -81,7 +81,7 @@ Each GitHub repository that acts as a **target** (in `target-to-source` or `bidi
 
 ### Example
 
-If your `configmap.yaml` has:
+If your `k8s/configmap.yaml` has:
 
 ```yaml
 repos:
@@ -119,7 +119,7 @@ No webhook is needed for `org/lib` (source-to-target).
 | HTTP 401 Unauthorized | HMAC signature mismatch | Ensure `WEBHOOK_GITHUB_SECRET` matches the GitHub webhook secret |
 | HTTP 401 Unauthorized | Missing `X-Hub-Signature-256` header | Ensure secret is set in both K8s Secret and GitHub webhook config |
 | HTTP 405 Method Not Allowed | Wrong HTTP method | Verify webhook URL is correct and GitHub is sending POST |
-| HTTP 400 Bad Request | Invalid payload or ping event | Ping events are expected to return 400; push events should return 200 |
+| HTTP 400 Bad Request | Body could not be read, or the payload is not valid JSON | Almost always a content-type problem — see the row below. A `ping` event does **not** cause this: it returns 200 |
 | `parse failed: invalid character` | Content type is `application/x-www-form-urlencoded` | Change Content type to `application/json` in GitHub webhook settings |
 | Mirror sync not triggered | Wrong direction | Verify the repo's direction is `target-to-source` or `bidirectional` |
 | Mirror sync not triggered | Wrong `target_path` | Ensure `target_path` in config matches the GitHub repository's `full_name` (e.g., `org/repo`) |

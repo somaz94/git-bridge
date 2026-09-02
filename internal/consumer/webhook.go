@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"net/http"
 
+	"git-bridge/internal/config"
 	"git-bridge/internal/mirror"
+	"git-bridge/internal/task"
 )
 
 // maxBodySize is the maximum allowed webhook request body size (1MB).
@@ -20,7 +22,8 @@ const (
 	headerGitLabToken     = "X-Gitlab-Token"
 	headerGitHubSignature = "X-Hub-Signature-256"
 	githubSigPrefix       = "sha256="
-	// zeroSHA는 GitLab/GitHub push 페이로드가 ref 삭제를 알릴 때 after에 보내는 값.
+	// zeroSHA is what GitLab and GitHub put in after when a push payload reports
+	// that a ref was deleted.
 	zeroSHA = "0000000000000000000000000000000000000000"
 )
 
@@ -39,6 +42,10 @@ type GitLabPushEvent struct {
 	} `json:"repository"`
 	Project struct {
 		PathWithNamespace string `json:"path_with_namespace"`
+		// WebURL is the only clue to which GitLab instance sent the event
+		// (e.g. "http://gitlab.example.com/group/repo"). When two instances of the
+		// same type are configured, it is what narrows the provider down by host.
+		WebURL string `json:"web_url"`
 	} `json:"project"`
 	Ref   string `json:"ref"`
 	After string `json:"after"`
@@ -63,37 +70,58 @@ type GitHubPushEvent struct {
 
 // Webhook handles HTTP webhook events from GitLab and GitHub.
 type Webhook struct {
-	ctx          context.Context
+	// tasks owns the syncs this handler starts. The handler answers the hook
+	// immediately and the sync outlives the request, so shutdown needs a way to
+	// wait for it rather than killing the git command it is running.
+	tasks        *task.Group
 	mirrorSvc    Mirrorer
 	gitlabSecret string
 	githubSecret string
+	// hosts is the index that turns the payload's instance host into a provider
+	// name. When nil, events dispatch by type alone, with no narrowing, as before.
+	hosts config.HostResolver
 }
 
-// NewWebhook creates a new webhook consumer.
-func NewWebhook(ctx context.Context, mirrorSvc Mirrorer, gitlabSecret, githubSecret string) *Webhook {
+// NewWebhook creates a new webhook consumer. Syncs it starts run under tasks.
+//
+// hosts is the base_url host → provider name index (config.Config.HostResolver);
+// when it is nil or empty, every event dispatches by type alone exactly as before.
+func NewWebhook(tasks *task.Group, mirrorSvc Mirrorer, gitlabSecret, githubSecret string, hosts config.HostResolver) *Webhook {
 	return &Webhook{
-		ctx:          ctx,
+		tasks:        tasks,
 		mirrorSvc:    mirrorSvc,
 		gitlabSecret: gitlabSecret,
 		githubSecret: githubSecret,
+		hosts:        hosts,
 	}
 }
 
-// pushEvent는 provider별 push 페이로드에서 repo 경로/ref/pusher 추출과 삭제 여부
-// 판정을 추상화한다.
+// pushEvent abstracts pulling the repo path, ref and pusher out of a per-provider
+// push payload, and deciding whether the push is a deletion.
 type pushEvent interface {
 	target() (repoPath, ref, pusher string)
-	// isDelete는 이 push가 ref 삭제 이벤트인지 반환한다(after == zeroSHA 등).
+	// isDelete reports whether this push is a ref deletion (after == zeroSHA, etc.).
 	isDelete() bool
+	// instanceURL returns the URL of the instance that sent the event, and whether
+	// this provider is the kind that can be narrowed by host. routable=false means
+	// no host lookup is attempted at all.
+	instanceURL() (rawURL string, routable bool)
 }
 
 func (e *GitLabPushEvent) target() (repoPath, ref, pusher string) {
 	return e.Project.PathWithNamespace, e.Ref, e.UserName
 }
 
-// GitLab push/tag_push 모두 ref 삭제 시 after에 zeroSHA를 보낸다.
+// GitLab sends zeroSHA in after on a ref delete, for both push and tag_push.
 func (e *GitLabPushEvent) isDelete() bool {
 	return e.After == zeroSHA
+}
+
+// GitLab can run several self-hosted instances, so narrowing by host is worth it.
+// An older instance that sends no web_url yields an empty string, and the caller
+// falls back.
+func (e *GitLabPushEvent) instanceURL() (string, bool) {
+	return e.Project.WebURL, true
 }
 
 func (e *GitHubPushEvent) target() (repoPath, ref, pusher string) {
@@ -104,13 +132,20 @@ func (e *GitHubPushEvent) target() (repoPath, ref, pusher string) {
 	return e.Repository.FullName, e.Ref, pusher
 }
 
-// GitHub은 deleted:true 플래그를 보내며, after도 zeroSHA가 된다(둘 다 허용).
+// GitHub sends a deleted:true flag, and after is zeroSHA too (both are accepted).
 func (e *GitHubPushEvent) isDelete() bool {
 	return e.Deleted || e.After == zeroSHA
 }
 
-// readLimitedBody는 요청 본문을 maxBodySize까지 읽고, 실패 시 400을 쓴다.
-// ok=false면 호출부는 즉시 return해야 한다.
+// The GitHub provider only ever deals with the single github.com instance, so
+// there is nothing to narrow. Once several GitHub Enterprise instances get
+// attached, switch this to routable=true and use repository.html_url.
+func (e *GitHubPushEvent) instanceURL() (string, bool) {
+	return "", false
+}
+
+// readLimitedBody reads the request body up to maxBodySize and writes a 400 on
+// failure. When ok=false the caller must return immediately.
 func readLimitedBody(rw http.ResponseWriter, r *http.Request, logPrefix string) (body []byte, ok bool) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize))
 	if err != nil {
@@ -121,8 +156,8 @@ func readLimitedBody(rw http.ResponseWriter, r *http.Request, logPrefix string) 
 	return body, true
 }
 
-// dispatchPushEvent는 webhook 공통 처리: 본문을 event로 파싱 → repo/ref/pusher 추출 →
-// 로그 → 비동기 SyncByTarget 실행 → 200 응답.
+// dispatchPushEvent is the shared webhook path: parse the body into event → pull
+// out repo/ref/pusher → log → run SyncByTarget asynchronously → answer 200.
 func (w *Webhook) dispatchPushEvent(rw http.ResponseWriter, provider string, body []byte, event pushEvent) {
 	if err := json.Unmarshal(body, event); err != nil {
 		slog.Error(provider+" webhook: parse failed", "error", err)
@@ -134,27 +169,46 @@ func (w *Webhook) dispatchPushEvent(rw http.ResponseWriter, provider string, bod
 	logger := slog.With("provider", provider, "repo", repoPath, "ref", ref, "pusher", pusher)
 	logger.Info("received " + provider + " push event")
 
-	meta := mirror.EventMeta{Ref: ref}
+	// The route only tells us the type. Narrowing all the way to a provider name by
+	// the payload's instance host keeps the directions apart even when two instances
+	// of the same type hold the same path. When it cannot be narrowed, the type
+	// string is passed through and the old behaviour is kept.
+	dispatchKey := provider
+	if rawURL, routable := event.instanceURL(); routable {
+		switch name := w.hosts.Resolve(rawURL); {
+		case name != "":
+			dispatchKey = name
+			logger = logger.With("provider_name", name)
+		case rawURL == "":
+			logger.Warn("webhook payload carries no instance URL, dispatching by provider type")
+		default:
+			logger.Warn("webhook instance URL matches no provider base_url, dispatching by provider type",
+				"instance_url", rawURL)
+		}
+	}
+
+	meta := mirror.EventMeta{Ref: ref, Source: mirror.SourceWebhook}
 	if event.isDelete() {
-		// ref 삭제 이벤트: target(gitlab/github) 삭제를 source(codecommit)로 전파한다.
-		// tag가 아닌 모든 ref는 branch로 본다. 미지의 ref 종류는 branch로 떨어져
-		// fullRefName이 refs/heads/를 붙이고 → RefExists=false → 무해한 no-op이 된다.
+		// Ref delete event: propagate the delete on the target (gitlab/github) back
+		// to the source (codecommit). Every ref that is not a tag counts as a branch,
+		// so an unknown ref kind falls through to branch, fullRefName prefixes it with
+		// refs/heads/ → RefTip="" → a harmless no-op.
 		refType := "branch"
 		if meta.IsTag() {
 			refType = "tag"
 		}
 		refName := meta.RefName()
-		go func() {
-			if err := w.mirrorSvc.SyncDeleteByTarget(w.ctx, provider, repoPath, refType, refName); err != nil {
+		w.tasks.Go(func(ctx context.Context) {
+			if err := w.mirrorSvc.SyncDeleteByTarget(ctx, dispatchKey, repoPath, refType, refName); err != nil {
 				logger.Error("mirror delete sync failed", "error", err)
 			}
-		}()
+		})
 	} else {
-		go func() {
-			if err := w.mirrorSvc.SyncByTarget(w.ctx, provider, repoPath, meta); err != nil {
+		w.tasks.Go(func(ctx context.Context) {
+			if err := w.mirrorSvc.SyncByTarget(ctx, dispatchKey, repoPath, meta); err != nil {
 				logger.Error("mirror sync failed", "error", err)
 			}
-		}()
+		})
 	}
 
 	rw.WriteHeader(http.StatusOK)
@@ -168,7 +222,8 @@ func (w *Webhook) GitLabHandler(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// secret token 검증 — GitLab은 헤더 토큰이라 본문을 읽기 전에 거부한다.
+	// Secret token check — GitLab's token is a header, so a bad one is rejected
+	// before the body is read.
 	if w.gitlabSecret != "" {
 		if r.Header.Get(headerGitLabToken) != w.gitlabSecret {
 			slog.Warn("gitlab webhook: invalid token")
@@ -196,7 +251,7 @@ func (w *Webhook) GitHubHandler(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// HMAC-SHA256 서명 검증 — 본문이 필요하므로 읽은 뒤에 검증한다.
+	// HMAC-SHA256 signature check — it needs the body, so it runs after the read.
 	if w.githubSecret != "" {
 		signature := r.Header.Get(headerGitHubSignature)
 		if !verifyGitHubSignature(body, w.githubSecret, signature) {

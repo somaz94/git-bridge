@@ -34,14 +34,16 @@ Settings > Webhooks > Add new webhook
 |-------|-------|
 | **URL** | `http://git-bridge.example.com/webhook/gitlab` |
 | **Secret token** | Value of `WEBHOOK_GITLAB_SECRET` (e.g., `git-bridge-token`) |
-| **Trigger** | Push events |
+| **Trigger** | Push events **and** Tag push events |
 | **SSL verification** | Disable (if using HTTP, not HTTPS) |
 
 <br/>
 
 ### 3. Select Events
 
-Only **Push events** is needed. GitLab's push event covers both branch pushes and tag pushes.
+Enable **Push events** (branch pushes) **and** **Tag push events** (tag pushes). These are separate triggers in GitLab — Push events alone does **not** deliver tag pushes.
+
+Git-Bridge's webhook handler dispatches purely on the payload's `ref` field, so both branch and tag pushes are mirrored once their respective triggers are enabled.
 
 Other events (Merge request, Issue, etc.) are not processed by Git-Bridge and can be left unchecked.
 
@@ -78,7 +80,7 @@ Each GitLab project that acts as a **target** (in `target-to-source` or `bidirec
 
 ### Example
 
-If your `configmap.yaml` has:
+If your `k8s/configmap.yaml` has:
 
 ```yaml
 repos:

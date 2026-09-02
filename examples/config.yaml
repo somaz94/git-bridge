@@ -17,7 +17,15 @@
 # =============================================================================
 
 server:
-  port: 8080  # HTTP server port (default: 8080)
+  port: 8080          # Public HTTP server port (default: 8080)
+  console_port: 8081  # Console-only listener (default: 8081). Must differ from port —
+                      # the public route points at port, so keeping the console on its
+                      # own listener is what keeps it off the internet.
+  # Where the console's API docs link points. The docs are served on `port` while
+  # the portal proxies only `console_port`, so this must be an absolute URL — a
+  # relative path would resolve against the console listener and 404. Empty hides
+  # the link rather than rendering a dead one.
+  api_docs_url: "https://git-bridge.example.com/api-docs"
 
 # =============================================================================
 # Providers
@@ -118,7 +126,7 @@ repos:
     source: codecommit-eu
     target: gitlab-main
     source_path: git-bridge-test
-    target_path: server/git-bridge-test
+    target_path: team/test-repo
     direction: source-to-target
 
   # CodeCommit(EU) ↔ GitLab (bidirectional — requires GitLab webhook)

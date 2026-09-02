@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"git-bridge/internal/config"
@@ -20,7 +21,7 @@ func TestSlack_Send_Success(t *testing.T) {
 	var received map[string]interface{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&received)
+		_ = json.NewDecoder(r.Body).Decode(&received)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -36,11 +37,7 @@ func TestSlack_Send_Success(t *testing.T) {
 		Body:  "codecommit/repo → gitlab/repo",
 	})
 
-	text, ok := received["text"].(string)
-	if !ok {
-		t.Fatal("text field missing")
-	}
-	if len(text) == 0 {
+	if text := attachmentText(t, received); len(text) == 0 {
 		t.Error("text should not be empty")
 	}
 
@@ -54,7 +51,7 @@ func TestSlack_Send_Error(t *testing.T) {
 	var received map[string]interface{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&received)
+		_ = json.NewDecoder(r.Body).Decode(&received)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -67,7 +64,7 @@ func TestSlack_Send_Error(t *testing.T) {
 		Body:  "clone failed",
 	})
 
-	text := received["text"].(string)
+	text := attachmentText(t, received)
 	if len(text) == 0 {
 		t.Error("text should not be empty")
 	}
@@ -77,7 +74,7 @@ func TestSlack_Send_NoChannel(t *testing.T) {
 	var received map[string]interface{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&received)
+		_ = json.NewDecoder(r.Body).Decode(&received)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -111,7 +108,7 @@ func TestSlack_Send_Warning(t *testing.T) {
 	var received map[string]interface{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&received)
+		_ = json.NewDecoder(r.Body).Decode(&received)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -119,9 +116,27 @@ func TestSlack_Send_Warning(t *testing.T) {
 	s := NewSlack(config.SlackConfig{WebhookURL: server.URL, Channel: "#alerts"})
 	s.Send(Message{Level: "warning", Title: "Slow Sync", Body: "took 5m"})
 
-	text, ok := received["text"].(string)
-	if !ok || len(text) == 0 {
-		t.Fatal("text field missing or empty")
+	if text := attachmentText(t, received); len(text) == 0 {
+		t.Fatal("text is empty")
+	}
+}
+
+func TestSlack_Send_UnknownLevel(t *testing.T) {
+	var received map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&received)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	s := NewSlack(config.SlackConfig{WebhookURL: server.URL})
+	// A level that is not in the map must fall back to success (✅).
+	s.Send(Message{Level: "bogus", Title: "Unknown", Body: "fallback"})
+
+	text := attachmentText(t, received)
+	if len(text) == 0 || text[:len("✅")] != "✅" {
+		t.Errorf("unknown level should fall back to ✅ prefix, got %q", text)
 	}
 }
 
@@ -178,5 +193,148 @@ func TestNewSlack(t *testing.T) {
 	}
 	if s.client == nil {
 		t.Error("client should not be nil")
+	}
+}
+
+// attachmentText pulls the rendered body out of the payload.
+//
+// The message moved into an attachment when the colour bar was added: only
+// attachments carry a colour, so the top-level "text" is now deliberately
+// empty. Every assertion on the rendered message goes through here.
+func attachmentText(t *testing.T, payload map[string]interface{}) string {
+	t.Helper()
+	return attachmentField(t, payload, "text")
+}
+
+func attachmentColor(t *testing.T, payload map[string]interface{}) string {
+	t.Helper()
+	return attachmentField(t, payload, "color")
+}
+
+func attachmentField(t *testing.T, payload map[string]interface{}, key string) string {
+	t.Helper()
+	atts, ok := payload["attachments"].([]interface{})
+	if !ok || len(atts) != 1 {
+		t.Fatalf("want exactly 1 attachment, got %#v", payload["attachments"])
+	}
+	att, ok := atts[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("attachment is not an object: %#v", atts[0])
+	}
+	v, ok := att[key].(string)
+	if !ok {
+		t.Fatalf("attachment %q field missing in %#v", key, att)
+	}
+	return v
+}
+
+// Duplicating the body at the top level would render it twice — once above the
+// coloured attachment and once inside it.
+func TestSlack_Send_BodyLivesOnlyInTheAttachment(t *testing.T) {
+	var received map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&received)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	NewSlack(config.SlackConfig{WebhookURL: server.URL}).Send(Message{
+		Level: "success", Title: "Mirror Complete", Body: "codecommit/repo → gitlab/repo",
+	})
+
+	if top, present := received["text"]; present && top != "" {
+		t.Errorf("top-level text = %q, want it empty so the body is not rendered twice", top)
+	}
+	if body := attachmentText(t, received); !strings.Contains(body, "codecommit/repo → gitlab/repo") {
+		t.Errorf("attachment text = %q, want it to carry the body", body)
+	}
+}
+
+// The colour is what makes a failure findable while scrolling past routine
+// green syncs, so each level must map to a distinct bar.
+func TestSlack_Send_LevelPicksTheColour(t *testing.T) {
+	for _, tc := range []struct{ level, want string }{
+		{"success", "#2eb886"},
+		{"error", "#a30200"},
+		{"warning", "#daa038"},
+		{"bogus", "#2eb886"}, // unknown falls back to success, matching the ✅ prefix
+	} {
+		t.Run(tc.level, func(t *testing.T) {
+			var received map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&received)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			NewSlack(config.SlackConfig{WebhookURL: server.URL}).Send(Message{
+				Level: tc.level, Title: "T", Body: "B",
+			})
+
+			if got := attachmentColor(t, received); got != tc.want {
+				t.Errorf("colour for %q = %q, want %q", tc.level, got, tc.want)
+			}
+		})
+	}
+}
+
+// Without mrkdwn_in the *bold* title renders as literal asterisks inside an
+// attachment — attachments are not markdown by default, unlike top-level text.
+func TestSlack_Send_AttachmentOptsIntoMarkdown(t *testing.T) {
+	var received map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&received)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	NewSlack(config.SlackConfig{WebhookURL: server.URL}).Send(Message{
+		Level: "success", Title: "Mirror Complete", Body: "b",
+	})
+
+	atts := received["attachments"].([]interface{})
+	att := atts[0].(map[string]interface{})
+	mrkdwn, ok := att["mrkdwn_in"].([]interface{})
+	if !ok || len(mrkdwn) == 0 || mrkdwn[0] != "text" {
+		t.Errorf("mrkdwn_in = %#v, want [\"text\"] so *bold* renders", att["mrkdwn_in"])
+	}
+}
+
+// The lock-screen preview must stay short — the body carries SHAs and URLs.
+func TestSlack_Send_FallbackIsTitleOnly(t *testing.T) {
+	var received map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&received)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	NewSlack(config.SlackConfig{WebhookURL: server.URL}).Send(Message{
+		Level: "error", Title: "Forced Update: repo", Body: "Deleted tip: deadbeef\nUndo: git fetch ...",
+	})
+
+	fallback := attachmentField(t, received, "fallback")
+	if !strings.Contains(fallback, "Forced Update: repo") {
+		t.Errorf("fallback = %q, want it to name the event", fallback)
+	}
+	if strings.Contains(fallback, "deadbeef") {
+		t.Errorf("fallback = %q, want it free of body detail", fallback)
+	}
+}
+
+// The colour bar moved the body into an attachment, whose column is narrower
+// than a plain message — a raw CodeCommit console URL wrapped onto three lines
+// there and pushed the message past Slack's collapse threshold.
+func TestLink_WrapsURLInSlackLinkSyntax(t *testing.T) {
+	got := Link("https://example.com/a/b/c", "codecommit/my-repo")
+	if want := "<https://example.com/a/b/c|codecommit/my-repo>"; got != want {
+		t.Errorf("Link() = %q, want %q", got, want)
+	}
+}
+
+// A provider with no web URL must not render an empty link target.
+func TestLink_EmptyURLFallsBackToTheLabel(t *testing.T) {
+	if got := Link("", "codecommit/my-repo"); got != "codecommit/my-repo" {
+		t.Errorf("Link(\"\") = %q, want the bare label", got)
 	}
 }

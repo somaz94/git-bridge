@@ -1,0 +1,751 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Git Bridge — Console</title>
+  <style>
+    :root {
+      --bg: #f4f6f9; --panel: #ffffff; --border: #e2e6ec; --text: #1f2733; --muted: #6b7685;
+      --accent: #3b6ef5; --accent-text: #ffffff; --ok: #2f9e6b; --warn: #d99a2b; --danger: #d24b4b;
+      --shadow: 0 1px 3px rgba(16,24,40,0.08), 0 1px 2px rgba(16,24,40,0.04);
+    }
+    :root[data-theme="dark"] {
+      --bg: #0f1420; --panel: #182130; --border: #263141; --text: #e6ebf2; --muted: #97a3b4;
+      --accent: #5b86ff; --accent-text: #0f1420; --ok: #4fc08d; --warn: #e0b25a; --danger: #e46a6a;
+      --shadow: 0 1px 3px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.3);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
+    header { display: flex; align-items: center; gap: 16px; padding: 16px 24px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10; }
+    header .brand { font-weight: 700; font-size: 18px; }
+    header .spacer { flex: 1; }
+    header .viewer { font-size: 13px; color: var(--muted); white-space: nowrap; }
+    header .viewer strong { color: var(--text); font-weight: 600; }
+    header .apidocs { font: inherit; font-size: 13px; text-decoration: none; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; white-space: nowrap; }
+    header .apidocs:hover { border-color: var(--accent); }
+    button { font: inherit; cursor: pointer; border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 8px; padding: 7px 12px; }
+    button:hover { border-color: var(--accent); }
+    button:disabled { opacity: 0.5; cursor: default; }
+    main { max-width: 1100px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 18px; }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px; box-shadow: var(--shadow); }
+    .panel h1 { font-size: 18px; margin: 0 0 4px; }
+    .panel .lead { color: var(--muted); margin: 0 0 18px; font-size: 14px; }
+    .controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+    .controls label { font-size: 13.5px; display: inline-flex; align-items: center; gap: 6px; }
+    .controls select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; }
+    .msg { font-size: 13.5px; color: var(--muted); }
+    .msg.err { color: var(--danger); }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13.5px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    td.time { white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .tablewrap { overflow-x: auto; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+    .route { color: var(--muted); }
+    .badge { display: inline-block; border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 600; border: 1px solid transparent; }
+    .badge.ok { color: var(--ok); border-color: var(--ok); }
+    .badge.skip { color: var(--muted); border-color: var(--border); }
+    .badge.fail { color: var(--danger); border-color: var(--danger); }
+    .reason { color: var(--muted); font-size: 12.5px; }
+    .empty { color: var(--muted); padding: 18px 2px; font-size: 14px; }
+    tr.row { cursor: pointer; }
+    tr.row:hover > td { background: var(--bg); }
+    tr.loop > td { box-shadow: inset 3px 0 0 var(--warn); }
+    .echo { display: inline-block; margin-left: 6px; font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 0 6px; }
+    .loopwarn { color: var(--warn); font-size: 12.5px; margin-top: 3px; }
+    /* Forced updates are the one "ok" that is worse than a failure: the push
+       worked and that is precisely the problem. Danger colour, not warn. */
+    .forcedwarn { color: var(--danger); font-size: 12.5px; margin-top: 3px; font-weight: 600; }
+    tr.forced > td { box-shadow: inset 3px 0 0 var(--danger); }
+    .kv dd.forced { color: var(--danger); white-space: pre-wrap; }
+    .caret { display: inline-block; width: 10px; color: var(--muted); font-size: 11px; }
+    tr.detail > td { background: var(--bg); }
+    .kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; font-size: 12.5px; }
+    .kv dt { color: var(--muted); }
+    .kv dd { margin: 0; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .kv dd.error { color: var(--danger); white-space: pre-wrap; }
+    .retry { margin-top: 10px; }
+    .retry button { font-size: 12.5px; padding: 5px 11px; }
+    /* Restore writes to a repository; retry only re-runs a sync. Same row, so
+       the colour is what separates "re-read this" from "change something". */
+    button.danger { border-color: var(--danger); color: var(--danger); }
+    .retrymsg { margin-left: 9px; font-size: 12.5px; color: var(--muted); }
+    .retrymsg.ok { color: var(--ok); }
+    .retrymsg.err { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">Git Bridge</div>
+    <div class="spacer"></div>
+    <span class="viewer" id="viewer" hidden></span>
+    <a class="apidocs" id="apidocs" href="#" target="_blank" rel="noopener noreferrer" hidden>API docs</a>
+    <button id="themeToggle" title="Toggle theme" aria-label="Toggle theme">☀️</button>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h1>Recent mirror activity</h1>
+      <p class="lead">
+        One row per completed mirror operation, newest first. The service keeps the
+        most recent events in memory and appends every one of them to the history
+        file on the volume, so this list survives a restart.
+      </p>
+
+      <div class="controls">
+        <label for="repo">Repo
+          <select id="repo"><option value="">All</option></select>
+        </label>
+        <label for="source">Trigger
+          <select id="source"><option value="">All</option></select>
+        </label>
+        <label for="limit">Show
+          <select id="limit">
+            <option value="50">50</option>
+            <option value="100" selected>100</option>
+            <option value="250">250</option>
+            <option value="500">500</option>
+          </select>
+        </label>
+        <label><input type="checkbox" id="failuresOnly" /> Failures only</label>
+        <label title="Shows only syncs that overwrote a ref non-fast-forward — the destination lost commits. These are recorded as successes, so the Failures filter never surfaces them."><input type="checkbox" id="forcedOnly" /> Forced updates only</label>
+        <label title="Hides only the scheduled reconciles that found nothing to do. A reconcile that actually mirrored something, or failed, is always shown."><input type="checkbox" id="hideRoutine" checked /> Hide idle reconciles</label>
+        <label><input type="checkbox" id="collapse" checked /> Collapse echoes</label>
+        <label><input type="checkbox" id="auto" checked /> Auto-refresh</label>
+        <button id="refresh">Refresh</button>
+        <span class="msg" id="msg"></span>
+      </div>
+
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th>Time</th>
+              <th>Repo</th>
+              <th>Action</th>
+              <th>Route</th>
+              <th>Ref</th>
+              <th>Result</th>
+              <th>Trigger</th>
+              <th class="num">Duration</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="empty" hidden>No events recorded yet.</div>
+    </section>
+  </main>
+
+  <script>
+    // Every request below is RELATIVE. The reverse-proxy portal serves this page
+    // at /apps/git-bridge/ and strips that prefix before forwarding, so an
+    // absolute path would leave this app and hit the portal instead.
+
+    const REFRESH_MS = 20000;
+    const THEME_KEY = "git-bridge-theme";
+
+    function applyTheme(t) {
+      const btn = document.getElementById("themeToggle");
+      if (t === "dark") { document.documentElement.setAttribute("data-theme", "dark"); btn.textContent = "🌙"; }
+      else { document.documentElement.removeAttribute("data-theme"); btn.textContent = "☀️"; }
+    }
+    document.getElementById("themeToggle").addEventListener("click", () => {
+      const now = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      localStorage.setItem(THEME_KEY, now); applyTheme(now);
+    });
+    applyTheme(localStorage.getItem(THEME_KEY) || "light");
+
+    function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+    // Show who the portal says is viewing. Failure is silent on purpose: the
+    // name is decoration, and a console that refused to render mirror history
+    // because it could not label the viewer would be worse than an unlabelled
+    // one. Reached without the portal (a port-forward), the fields come back
+    // empty and the element simply stays hidden.
+    // Only http(s) may reach an href. The value comes from this service's own
+    // config, but a link is the one place a bad string becomes executable
+    // (javascript:), and the check costs nothing.
+    function safeURL(raw) {
+      try {
+        const u = new URL(String(raw ?? ""), window.location.href);
+        return (u.protocol === "http:" || u.protocol === "https:") ? u.href : "";
+      } catch (e) {
+        return "";
+      }
+    }
+
+    // Whether the restore route exists. Starts false so a failed identity call
+    // leaves the button hidden rather than showing one that cannot work.
+    let restoreEnabled = false;
+    // Same, for the route that applies a rewind the push guard withheld.
+    let forceEnabled = false;
+
+    async function loadViewer() {
+      try {
+        const res = await fetch("console/api/me");
+        if (!res.ok) { return; }
+        const me = await res.json();
+
+        // Same fallback order the portal and the -ops apps use: a Keycloak
+        // account with no first/last name has an empty display name, so the
+        // username has to be able to stand in for it.
+        const label = me.name || me.user || me.email;
+        if (label) {
+          const el = document.getElementById("viewer");
+          // Greeting wording matches the portal's own greeting. A reader
+          // arrives here by clicking through the portal, and being addressed
+          // two different ways on two consecutive screens reads as two
+          // different systems.
+          el.innerHTML = "Hello, <strong>" + esc(label) + "</strong>";
+          el.title = [me.user, me.email, (me.groups || []).join(", ")].filter(Boolean).join("\n");
+          el.hidden = false;
+        }
+
+        const docs = safeURL(me.api_docs_url);
+        if (docs) {
+          const a = document.getElementById("apidocs");
+          a.href = docs;
+          a.hidden = false;
+        }
+
+        // Asked for rather than assumed: a deployment with no mirror service
+        // wired in serves the history fine, and offering a button that 404s
+        // when pressed is worse than not offering one.
+        restoreEnabled = me.restore_enabled === true;
+        forceEnabled = me.force_enabled === true;
+      } catch (e) {
+        /* header decoration only — never block the page on it */
+      }
+    }
+
+    function setMsg(text, kind) {
+      const el = document.getElementById("msg");
+      el.className = "msg" + (kind ? " " + kind : "");
+      el.textContent = text;
+    }
+
+    // Printing only the clock time makes yesterday's row and today's row look
+    // identical. This table holds more than a day in its default 500 rows (hiding
+    // reconcile pulls in weeks), and when a rewind or a delete happened is the very
+    // reason to open this screen, so print the date too. Today's rows drop the date
+    // so a scan splits today from earlier at a glance.
+    function fmtTime(ts) {
+      const d = new Date(ts);
+      if (isNaN(d.getTime())) return String(ts ?? "");
+      const now = new Date();
+      const sameDay = d.getFullYear() === now.getFullYear()
+        && d.getMonth() === now.getMonth()
+        && d.getDate() === now.getDate();
+      return sameDay
+        ? d.toLocaleTimeString()
+        : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString();
+    }
+
+    function fmtFullTime(ts) {
+      const d = new Date(ts);
+      return isNaN(d.getTime()) ? String(ts ?? "") : d.toLocaleString();
+    }
+
+    function fmtDuration(ms) {
+      const n = Number(ms);
+      if (!isFinite(n) || n < 0) { return ""; }
+      return n < 1000 ? n + " ms" : (n / 1000).toFixed(1) + " s";
+    }
+
+    // Strip the refs/heads/ and refs/tags/ prefix for display, but keep tags
+    // marked — a branch and a tag of the same name are different events and the
+    // tag path is the one with the known echo-loop quirk.
+    function fmtRef(ref) {
+      const s = String(ref ?? "");
+      if (s.startsWith("refs/heads/")) { return esc(s.slice(11)); }
+      if (s.startsWith("refs/tags/")) { return esc(s.slice(10)) + ' <span class="reason">tag</span>'; }
+      return s ? esc(s) : '<span class="reason">all refs</span>';
+    }
+
+    // Every real push produces two rows: the sync that did the work, and the
+    // echo from the other side reporting there was nothing left to do. Grouping
+    // them keeps the list readable — and makes an echo that does NOT settle
+    // stand out, which is the shape a mirror loop takes.
+    const LOOP_WINDOW_MS = 120000;
+    const LOOP_MIN_EVENTS = 3;
+
+    function groupEvents(events, collapse) {
+      if (!collapse) { return events.map((ev) => ({ head: ev, members: [ev] })); }
+      const groups = [];
+      const index = new Map();
+      for (const ev of events) {
+        const key = [ev.repo, ev.action, ev.ref ?? ""].join("\0");
+        const open = index.get(key);
+        const t = new Date(ev.ts).getTime();
+        // events arrive newest-first, so an older member joins the group above it
+        if (open && isFinite(t) && Math.abs(open.newest - t) <= LOOP_WINDOW_MS) {
+          open.members.push(ev);
+          open.oldest = Math.min(open.oldest, t);
+          continue;
+        }
+        const g = { head: ev, members: [ev], newest: t, oldest: t };
+        groups.push(g);
+        index.set(key, g);
+      }
+      return groups;
+    }
+
+    // A loop is something the mirror does to itself, so only the triggers that
+    // can echo count toward it: a push arrives as a webhook and comes back as an
+    // SQS event. A cron reconcile or a hand-run retry is deliberate and cannot
+    // be an echo, yet two scheduled calls plus one manual retry inside the same
+    // window used to trip this and cry wolf — and a warning that fires on
+    // routine traffic is one people learn to ignore.
+    const ECHOABLE = new Set(["webhook", "sqs", ""]);
+    function echoable(ev) { return ECHOABLE.has(String(ev.source ?? "")); }
+
+    // A group is suspicious when the same repo+ref keeps coming back inside the
+    // window instead of settling after one echo.
+    //
+    // Only a push that actually moved something counts. Every real push already
+    // produces one "ok" plus a "skip" echo reporting there was nothing left to
+    // do, so counting the skip made two pushes to the same branch inside the
+    // window look like a loop — while the skip is the exact evidence the echo
+    // terminated. A failure is not a loop either; it has its own filter.
+    function isLoop(g) {
+      return g.members.filter((ev) => echoable(ev) && ev.result === "ok").length >= LOOP_MIN_EVENTS;
+    }
+
+    function forcedRefs(ev) { return Array.isArray(ev.forced) ? ev.forced : []; }
+
+    // Finds the delete that actually removed something inside a group.
+    //
+    // The head of a collapsed group is its NEWEST member, and every delete is
+    // immediately followed by the echo from the other side reporting the ref
+    // was already gone. So the head is the `skip`, and the event carrying the
+    // tip sits behind it — which made the restore button unreachable with
+    // "Collapse echoes" on, i.e. by default.
+    function restorableDelete(g) {
+      return (g.members || []).find((m) =>
+        m.action === "delete" && m.result === "ok" && m.deleted_tip) || null;
+    }
+
+    function heldRefs(ev) { return Array.isArray(ev.held) ? ev.held : []; }
+
+    // Finds the event inside a group that actually withheld something.
+    //
+    // Same reasoning as restorableDelete: a hold is followed within seconds by
+    // the other side's event reporting there is nothing to do, so on a
+    // collapsed group the head is that follow-up and the hold sits behind it.
+    // Reading the head would hide the button under the default settings.
+    function withheldPush(g) {
+      return (g.members || []).find((m) => heldRefs(m).length > 0) || null;
+    }
+
+    // Picks the member a collapsed group speaks for — the row, the detail
+    // fields, and the re-run button all read this one event.
+    //
+    // Same reasoning as restorableDelete and withheldPush: the head of a
+    // collapsed group is its NEWEST member, and on a normal push that is the
+    // echo coming back the other way — the leg that found the destination
+    // already ahead and could only skip. Speaking for the head prints the
+    // no-op leg in the Route column while the sync that carried the commits
+    // hides behind the echo badge, and re-runs that no-op on a click.
+    //
+    // A failure wins: a group holding one is a failure, whatever settled after
+    // it, and a re-run is for the leg that failed. With none, the "ok" is the
+    // member that actually moved something — the same model isLoop reads, where
+    // a real push is one "ok" plus an already-up-to-date echo. The head is the
+    // last resort, for a group that holds neither, which is what a pair of cron
+    // reconcile skips looks like.
+    //
+    // Ordering is unaffected: groups sort on g.newest, not on this.
+    function groupLead(g, ev) {
+      if (!g) { return ev; }
+      const members = g.members || [];
+      return members.find((m) => m.result === "fail")
+        || members.find((m) => m.result === "ok")
+        || g.head || ev;
+    }
+
+    function renderDetail(ev, id, g) {
+      const rows = [
+        ["Time", fmtFullTime(ev.ts)],
+        ["Repo", ev.repo],
+        ["Action", ev.action],
+        ["From", ev.from],
+        ["To", ev.to],
+        ["Ref", ev.ref || "(all refs)"],
+        ["Result", ev.result + (ev.reason ? " · " + ev.reason : "")],
+        ["Trigger", ev.source],
+        ["Duration", fmtDuration(ev.duration_ms)],
+      ].map(([k, v]) => "<dt>" + esc(k) + "</dt><dd>" + esc(v) + "</dd>").join("");
+      const err = ev.err
+        ? "<dt>Error</dt><dd class=\"error\">" + esc(ev.err) + "</dd>"
+        : "";
+      // The old SHA is the whole point of this block: the destination no longer
+      // names that commit anywhere, so this is the only place left to read it
+      // from, and git keeps the objects only until it garbage-collects.
+      const forced = forcedRefs(ev);
+      const forcedRow = forced.length
+        ? "<dt>Overwritten</dt><dd class=\"forced\">"
+          + forced.map((f) => esc(f.ref) + "\n  was " + esc(f.old) + "\n  now " + esc(f.new)).join("\n")
+          + "\n\nRecover the old tip from " + esc(ev.to) + " with:\n"
+          + "  git fetch " + esc("<clone-url>") + " " + esc(forced[0].old)
+          + "</dd>"
+        : "";
+      // Same reasoning as the block above, for the operation that discards a
+      // ref outright: after a delete the destination names neither the ref nor
+      // the commit it pointed at, so this row is the only surviving handle on
+      // what was removed.
+      //
+      // Both this block and the button below read the SAME resolved event, not
+      // the head: on a collapsed group the head is the echo, whose fields would
+      // render as "undefined" here and send a bogus request from the button.
+      const del = g ? restorableDelete(g)
+        : (ev.deleted_tip && ev.action === "delete" && ev.result === "ok" ? ev : null);
+      const deletedRow = del
+        ? "<dt>Deleted tip</dt><dd class=\"forced\">" + esc(del.deleted_tip)
+          + "\n\nRestore it on " + esc(del.to || "") + " with:\n"
+          + "  git fetch " + esc("<clone-url>") + " " + esc(del.deleted_tip) + "\n"
+          + "  git push " + esc("<clone-url>") + " " + esc(del.deleted_tip) + ":" + esc(del.ref || "")
+          + "</dd>"
+        : "";
+      // Offered only where it can actually do something: a delete that removed
+      // a tip, on a deployment that wired the route in. The server re-checks
+      // everything anyway — the button is a convenience, not the guard.
+      const restore = (restoreEnabled && del)
+        ? '<div class="retry"><button class="danger" data-restore="' + esc(del.repo)
+          + '" data-to="' + esc(del.to || "") + '" data-ref="' + esc(del.ref || "")
+          + '" data-sha="' + esc(del.deleted_tip) + '">Restore this ref</button>'
+          + '<span class="retrymsg" id="restoremsg-' + id + '"></span></div>'
+        : "";
+      // A hold is the one row where nothing happened and that is the news. It
+      // names the tip that stopped the write, because that commit is exactly
+      // what a forced push here would discard — the reader is being asked to
+      // weigh it, not just to notice a refusal.
+      const hold = g ? withheldPush(g) : (heldRefs(ev).length ? ev : null);
+      const held = hold ? heldRefs(hold) : [];
+      const heldRow = held.length
+        ? "<dt>Withheld</dt><dd class=\"forced\">"
+          + held.map((h) => esc(h.ref) + "\n  destination is at " + esc(h.dest)
+            + "\n  reason: " + esc(h.reason)).join("\n")
+          + "\n\nNothing was written. An echo that arrived late settles by itself;"
+          + "\na rewind someone meant to make does not."
+          + "</dd>"
+        : "";
+      // One button per withheld ref, because one force moves one ref. Offered
+      // only where the route is wired in — the server re-checks the hold
+      // against the history anyway, so this is convenience, not the guard.
+      const force = (forceEnabled && held.length)
+        ? '<div class="retry">'
+          + held.map((h) => '<button class="danger" data-force="' + esc(hold.repo)
+            + '" data-to="' + esc(hold.to || "") + '" data-ref="' + esc(h.ref)
+            + '" data-dest="' + esc(h.dest) + '">Apply rewind of ' + esc(h.ref) + '</button>').join(" ")
+          + '<span class="retrymsg" id="forcemsg-' + id + '"></span></div>'
+        : "";
+      const restoredRow = ev.restored_tip
+        ? "<dt>Restored tip</dt><dd>" + esc(ev.restored_tip) + "</dd>"
+        : "";
+      const actorRow = ev.actor ? "<dt>By</dt><dd>" + esc(ev.actor) + "</dd>" : "";
+      // Offered on every row, not just failures. Re-running a sync that already
+      // succeeded is a cheap no-op, while restricting the button to failures
+      // would leave it invisible exactly when someone wants to force a repo to
+      // catch up without waiting for the nightly reconcile.
+      //
+      // It carries the row's destination so the server re-runs THIS sync rather
+      // than resolving "auto", which on a bidirectional repo always lands on
+      // target-to-source and so re-ran the opposite leg of anything that failed
+      // the other way. The label names that destination for the same reason the
+      // force button does: the side that gets written is what the operator is
+      // agreeing to. A row too old to record one falls back to the old wording
+      // and lets the server resolve "auto".
+      const rt = groupLead(g, ev);
+      const rtWay = (rt.from && rt.to) ? rt.from + " → " + rt.to : "";
+      const retry = '<div class="retry"><button data-retry="' + esc(rt.repo)
+        + '" data-to="' + esc(rt.to || "") + '" data-way="' + esc(rtWay) + '">'
+        + (rt.to ? "Re-run sync → " + esc(rt.to) : "Re-run sync for this repo")
+        + '</button>'
+        + '<span class="retrymsg" id="retrymsg-' + id + '"></span></div>';
+      return '<tr class="detail"><td></td><td colspan="8"><dl class="kv">' + rows + actorRow + forcedRow
+        + deletedRow + heldRow + restoredRow + err + "</dl>" + restore + force + retry + "</td></tr>";
+    }
+
+    function renderGroup(g, id) {
+      const ev = groupLead(g);
+      const result = String(ev.result ?? "");
+      const cls = result === "ok" ? "ok" : result === "fail" ? "fail" : "skip";
+      const reason = ev.reason ? '<div class="reason">' + esc(ev.reason) + "</div>" : "";
+      const extra = g.members.length > 1
+        ? '<span class="echo">+' + (g.members.length - 1) + " echo</span>"
+        : "";
+      const loop = isLoop(g)
+        ? '<div class="loopwarn">' + g.members.filter(echoable).length + " events for this ref within "
+          + (LOOP_WINDOW_MS / 1000) + "s — possible mirror loop</div>"
+        : "";
+      // Collapsing echoes must not hide this: a group speaks for one member,
+      // and the forced one may be any of the others.
+      const forcedCount = g.members.reduce((n, m) => n + forcedRefs(m).length, 0);
+      const forced = forcedCount
+        ? '<div class="forcedwarn">' + forcedCount + " ref" + (forcedCount === 1 ? "" : "s")
+          + " overwritten — history discarded at the destination</div>"
+        : "";
+      return '<tr class="row' + (isLoop(g) ? " loop" : "") + (forcedCount ? " forced" : "") + '" data-id="' + id + '">'
+        + '<td class="caret" id="caret-' + id + '">&#9656;</td>'
+        + '<td class="time" title="' + esc(fmtFullTime(ev.ts)) + '">' + esc(fmtTime(ev.ts)) + "</td>"
+        + "<td>" + esc(ev.repo) + extra + "</td>"
+        + "<td>" + esc(ev.action) + "</td>"
+        + '<td class="mono route">' + esc(ev.from) + " &rarr; " + esc(ev.to) + "</td>"
+        + '<td class="mono">' + fmtRef(ev.ref) + "</td>"
+        + '<td><span class="badge ' + cls + '">' + esc(result) + "</span>" + reason + forced + loop + "</td>"
+        + '<td class="reason">' + esc(ev.source) + "</td>"
+        + '<td class="num">' + esc(fmtDuration(ev.duration_ms)) + "</td>"
+        + "</tr>"
+        + renderDetail(ev, id, g);
+    }
+
+    function syncSelectOptions(id, values) {
+      const select = document.getElementById(id);
+      const current = select.value;
+      const wanted = ["", ...values];
+      const have = Array.from(select.options).map((o) => o.value);
+      if (have.length === wanted.length && have.every((v, i) => v === wanted[i])) { return; }
+      select.innerHTML = wanted
+        .map((r) => '<option value="' + esc(r) + '">' + (r ? esc(r) : "All") + "</option>")
+        .join("");
+      // Keep the selection even if it is no longer offered, so an auto-refresh
+      // cannot silently widen the filter under the reader.
+      select.value = wanted.includes(current) ? current : "";
+    }
+
+    // Detail rows start hidden and stay hidden across refreshes unless opened.
+    const opened = new Set();
+
+    function applyOpenState() {
+      document.querySelectorAll("tr.detail").forEach((tr, i) => {
+        const on = opened.has(String(i));
+        tr.hidden = !on;
+        const caret = document.getElementById("caret-" + i);
+        if (caret) { caret.innerHTML = on ? "&#9662;" : "&#9656;"; }
+      });
+    }
+
+    async function load() {
+      const btn = document.getElementById("refresh");
+      btn.disabled = true;
+      try {
+        const params = new URLSearchParams({ limit: document.getElementById("limit").value });
+        if (document.getElementById("failuresOnly").checked) { params.set("failures", "true"); }
+        if (document.getElementById("forcedOnly").checked) { params.set("forced", "true"); }
+        const repo = document.getElementById("repo").value;
+        if (repo) { params.set("repo", repo); }
+        const source = document.getElementById("source").value;
+        if (source) { params.set("source", source); }
+        if (document.getElementById("hideRoutine").checked) { params.set("hide_routine", "true"); }
+
+        const res = await fetch("console/api/history?" + params.toString());
+        const body = await res.json();
+        if (!res.ok) { throw new Error(body.error || ("HTTP " + res.status)); }
+
+        syncSelectOptions("repo", body.repos || []);
+        syncSelectOptions("source", body.sources || []);
+        const events = body.events || [];
+        const groups = groupEvents(events, document.getElementById("collapse").checked);
+        document.getElementById("rows").innerHTML = groups.map(renderGroup).join("");
+        applyOpenState();
+        document.getElementById("empty").hidden = events.length > 0;
+
+        const loops = groups.filter(isLoop).length;
+        // Counted over events, not groups: "was anything overwritten in this
+        // window" has to be answerable from the status line alone, without
+        // expanding a row or trusting that the group head is the forced one.
+        const forcedTotal = events.reduce((n, ev) => n + forcedRefs(ev).length, 0);
+        setMsg(events.length + (events.length === 1 ? " event" : " events")
+          + (groups.length !== events.length ? " in " + groups.length + " groups" : "")
+          + (loops ? " · " + loops + " possible loop" + (loops === 1 ? "" : "s") : "")
+          + (forcedTotal ? " · " + forcedTotal + " ref" + (forcedTotal === 1 ? "" : "s") + " overwritten" : "")
+          + " · updated " + new Date().toLocaleTimeString(), (loops || forcedTotal) ? "err" : "");
+      } catch (e) {
+        setMsg("Failed to load history: " + e.message, "err");
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    document.getElementById("rows").addEventListener("click", async (e) => {
+      const retryBtn = e.target.closest("button[data-retry]");
+      if (retryBtn) {
+        e.stopPropagation();
+        await runRetry(retryBtn);
+        return;
+      }
+      const restoreBtn = e.target.closest("button[data-restore]");
+      if (restoreBtn) {
+        e.stopPropagation();
+        await runRestore(restoreBtn);
+        return;
+      }
+      const forceBtn = e.target.closest("button[data-force]");
+      if (forceBtn) {
+        e.stopPropagation();
+        await runForce(forceBtn);
+        return;
+      }
+      const row = e.target.closest("tr.row");
+      if (!row) { return; }
+      const id = row.dataset.id;
+      if (opened.has(id)) { opened.delete(id); } else { opened.add(id); }
+      applyOpenState();
+    });
+
+    // Writes a ref back to a real repository, so the dialog spells out exactly
+    // what is about to happen and where, rather than asking "are you sure".
+    //
+    // The confirmation is a courtesy, not a control. The server re-reads the
+    // destination and refuses if the ref came back, because between rendering
+    // this row and pressing the button someone may have re-created the branch —
+    // and a restore that overwrote that would be the same accident it exists to
+    // undo, just with a different victim.
+    async function runRestore(btn) {
+      const { restore: repo, to, ref, sha } = btn.dataset;
+      const msg = btn.parentElement.querySelector(".retrymsg");
+      const confirmed = window.confirm(
+        "Restore " + ref + " on " + to + "?\n\n" +
+        "repo: " + repo + "\n" +
+        "commit: " + sha + "\n\n" +
+        "This writes to " + to + " and the mirror will then propagate it to the other side.\n" +
+        "It is refused if the ref already exists there."
+      );
+      if (!confirmed) { return; }
+      btn.disabled = true;
+      msg.className = "retrymsg";
+      msg.textContent = "Restoring…";
+      try {
+        const res = await fetch("console/api/restore", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ repo, to, ref, sha }),
+        });
+        const body = await res.json();
+        if (!res.ok) {
+          // A refusal means the guard worked and the destination changed; a
+          // breakage means the service could not do its job. Naming which one
+          // saves the reader from inferring it from prose.
+          const refusals = ["ref-exists", "no-matching-delete", "direction", "ref-override", "repo-busy"];
+          const kind = refusals.includes(body.reason) ? "Refused" : "Failed";
+          throw new Error(kind + ": " + (body.error || ("HTTP " + res.status)));
+        }
+        msg.className = "retrymsg ok";
+        msg.textContent = "Restored — reloading…";
+        await load();
+      } catch (err) {
+        msg.className = "retrymsg err";
+        msg.textContent = err.message;
+        btn.disabled = false;
+      }
+    }
+
+    // Overwrites a branch on a real repository — the only button here whose
+    // whole purpose is to discard something. The dialog therefore names the
+    // commit that will be lost rather than asking "are you sure": the decision
+    // is about that commit, and nobody can make it from a yes/no prompt.
+    //
+    // The server re-checks the hold against the history, so a press arriving
+    // after the situation resolved is refused rather than acted on.
+    async function runForce(btn) {
+      const { force: repo, to, ref, dest } = btn.dataset;
+      const msg = btn.parentElement.querySelector(".retrymsg");
+      const confirmed = window.confirm(
+        "Apply the withheld rewind of " + ref + " on " + to + "?\n\n" +
+        "repo: " + repo + "\n" +
+        "the destination is at: " + dest + "\n\n" +
+        "That commit will be discarded on " + to + ". Do this only if the rewind was deliberate —\n" +
+        "if this was a late echo, it has already resolved by itself and there is nothing to apply."
+      );
+      if (!confirmed) { return; }
+      btn.disabled = true;
+      msg.className = "retrymsg";
+      msg.textContent = "Applying…";
+      try {
+        const res = await fetch("console/api/force", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // dest is what pins this to the commit the dialog just named: the
+          // server matches the hold on it, and it becomes the push's lease, so
+          // a destination that moved while this row sat on screen is refused
+          // instead of being overwritten as if it were what we looked at.
+          body: JSON.stringify({ repo, to, ref, dest }),
+        });
+        const body = await res.json();
+        if (!res.ok) {
+          // 409 is the good refusal: the hold is gone, which usually means the
+          // two sides converged on their own while this row sat on screen.
+          const kind = res.status === 409 ? "Refused" : "Failed";
+          throw new Error(kind + ": " + (body.error || ("HTTP " + res.status)));
+        }
+        msg.className = "retrymsg ok";
+        msg.textContent = "Applying — the result will appear in the history…";
+        await load();
+      } catch (err) {
+        msg.className = "retrymsg err";
+        msg.textContent = err.message;
+        btn.disabled = false;
+      }
+    }
+
+    // The retry token lives in the pod, never here: this posts to the console
+    // and the server calls the mirror service itself.
+    async function runRetry(btn) {
+      const repo = btn.dataset.retry;
+      const to = btn.dataset.to || "";
+      const way = btn.dataset.way || "";
+      const msg = btn.parentElement.querySelector(".retrymsg");
+      // The confirmation spells out the whole direction, not just the button's
+      // destination. The row above now names the same leg — both read
+      // groupLead — but a route reads in one direction only when both ends are
+      // present, and this dialog is the last place to catch a click on the
+      // wrong row before something is written.
+      const what = way ? repo + " (" + way + ")" : repo;
+      if (!window.confirm("Re-run the mirror for " + what + "?")) { return; }
+      btn.disabled = true;
+      msg.className = "retrymsg";
+      msg.textContent = "Requesting…";
+      try {
+        const res = await fetch("console/api/retry", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(to ? { repo, to } : { repo, direction: "auto" }),
+        });
+        const body = await res.json();
+        if (!res.ok) { throw new Error(body.error || ("HTTP " + res.status)); }
+        msg.className = "retrymsg ok";
+        msg.textContent = "Accepted — the result will appear in the list.";
+      } catch (err) {
+        msg.className = "retrymsg err";
+        msg.textContent = "Failed: " + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    document.getElementById("refresh").addEventListener("click", load);
+    document.getElementById("limit").addEventListener("change", load);
+    document.getElementById("repo").addEventListener("change", load);
+    document.getElementById("source").addEventListener("change", load);
+    document.getElementById("collapse").addEventListener("change", load);
+    document.getElementById("failuresOnly").addEventListener("change", load);
+    document.getElementById("forcedOnly").addEventListener("change", load);
+    document.getElementById("hideRoutine").addEventListener("change", load);
+
+    setInterval(() => {
+      // Skip the tick when the tab is hidden or auto-refresh is off, so a
+      // forgotten tab does not poll the service all day.
+      if (document.getElementById("auto").checked && !document.hidden) { load(); }
+    }, REFRESH_MS);
+
+    // The first render waits for the identity call so the restore buttons are
+    // decided once, rather than drawing the list and immediately redrawing it.
+    // A failed identity call must not block the history, hence the catch.
+    loadViewer().catch(() => {}).finally(load);
+  </script>
+</body>
+</html>

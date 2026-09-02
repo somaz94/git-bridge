@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -40,9 +41,7 @@ notification:
   slack:
     webhook_url: ""
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -96,9 +95,7 @@ consumer:
   queue_url: https://sqs.test/q
   region: us-east-1
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -140,9 +137,7 @@ consumer:
   queue_url: https://sqs.test/q
   region: eu-central-1
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -168,9 +163,7 @@ repos: []
 consumer:
   queue_url: https://sqs.test/q
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	_, err := Load(path)
 	if err == nil {
@@ -199,9 +192,7 @@ repos:
 consumer:
   queue_url: https://sqs.test/q
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	_, err := Load(path)
 	if err == nil {
@@ -226,9 +217,7 @@ repos:
 consumer:
   queue_url: https://sqs.test/q
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	_, err := Load(path)
 	if err == nil {
@@ -244,9 +233,7 @@ func TestLoad_FileNotFound(t *testing.T) {
 }
 
 func TestLoad_InvalidYAML(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte("{{invalid yaml"), 0644)
+	path := writeCfg(t, "{{invalid yaml")
 
 	_, err := Load(path)
 	if err == nil {
@@ -273,9 +260,7 @@ repos:
     target_path: r
     direction: source-to-target
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	_, err := Load(path)
 	if err == nil {
@@ -298,9 +283,7 @@ repos:
     target_path: r
     direction: source-to-target
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	_, err := Load(path)
 	if err == nil {
@@ -323,9 +306,7 @@ repos:
     target_path: r
     direction: source-to-target
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	_, err := Load(path)
 	if err == nil {
@@ -355,9 +336,7 @@ repos:
     target_path: r
     direction: source-to-target
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -391,9 +370,7 @@ repos:
 consumer:
   queue_url: ""
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -457,9 +434,7 @@ consumers:
       access_key: AKIA_EU
       secret_key: secret_eu
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -511,9 +486,7 @@ consumers:
     queue_url: https://sqs.eu-central-1.amazonaws.com/222/q2
     region: eu-central-1
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	_, err := Load(path)
 	if err == nil {
@@ -547,9 +520,7 @@ consumers:
     queue_url: ""
     region: us-east-1
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	_, err := Load(path)
 	if err == nil {
@@ -582,9 +553,7 @@ consumers:
   - queue_url: https://sqs.us-east-1.amazonaws.com/111/q1
     region: us-east-1
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -623,9 +592,7 @@ repos:
     target_path: r2
     direction: source-to-target
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	_, err := Load(path)
 	if err == nil {
@@ -648,9 +615,7 @@ repos:
     target_path: r
     direction: source-to-target
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	_, err := Load(path)
 	if err == nil {
@@ -786,9 +751,7 @@ consumer:
     access_key: AKIA
     secret_key: secret
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(content), 0644)
+	path := writeCfg(t, content)
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -904,7 +867,7 @@ func TestLoad_RefOverrides_UnknownProvider(t *testing.T) {
 }
 
 func TestLoad_RefOverrides_ConflictsWithOneWay(t *testing.T) {
-	// repo는 source-to-target(cc→gl)만 허용인데 override가 gl→cc(역방향)를 요구 → 에러
+	// The repo allows source-to-target (cc→gl) only, but the override asks for gl→cc (the reverse) → error
 	yaml := retryDirectionBaseYAML + `repos:
   - name: example
     source: cc
@@ -950,5 +913,449 @@ func TestLoad_RefOverrides_DuplicatePattern(t *testing.T) {
 `
 	if _, err := writeAndLoad(t, yaml); err == nil {
 		t.Fatal("expected error for duplicate ref_override pattern")
+	}
+}
+
+// minimalConfig is a valid config with the given server block spliced in, so a
+// test can vary only the ports.
+func minimalConfig(serverBlock string) string {
+	return serverBlock + `
+providers:
+  codecommit-eu:
+    type: codecommit
+    region: eu-central-1
+    credentials:
+      git_username: user
+      git_password: pass
+  gitlab-main:
+    type: gitlab
+    base_url: http://gitlab.example.com
+    credentials:
+      token: glpat-test
+repos:
+  - name: test-repo
+    source: codecommit-eu
+    target: gitlab-main
+    source_path: test-repo
+    target_path: team/test-repo
+    direction: source-to-target
+`
+}
+
+func writeConfig(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+func TestLoad_DefaultConsolePort(t *testing.T) {
+	cfg, err := Load(writeConfig(t, minimalConfig("server:\n  port: 8080\n")))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server.ConsolePort != 8081 {
+		t.Errorf("console_port = %d, want 8081", cfg.Server.ConsolePort)
+	}
+}
+
+func TestLoad_ExplicitConsolePort(t *testing.T) {
+	cfg, err := Load(writeConfig(t, minimalConfig("server:\n  port: 8080\n  console_port: 9091\n")))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server.ConsolePort != 9091 {
+		t.Errorf("console_port = %d, want 9091", cfg.Server.ConsolePort)
+	}
+}
+
+// Sharing a port would put the console behind the public HTTPRoute, which is
+// exactly what the separate listener exists to prevent.
+func TestLoad_ConsolePortMustDifferFromPort(t *testing.T) {
+	_, err := Load(writeConfig(t, minimalConfig("server:\n  port: 8080\n  console_port: 8080\n")))
+	if err == nil {
+		t.Fatal("error = nil, want console_port == port to be rejected")
+	}
+	if !strings.Contains(err.Error(), "console_port") {
+		t.Errorf("error = %v, want it to name console_port", err)
+	}
+}
+
+// baseConfig is the smallest config that Load accepts, used by the drain-window
+// tests so the assertion is about that field and nothing else.
+const baseConfig = `
+providers:
+  cc:
+    type: codecommit
+    region: us-east-1
+    credentials:
+      git_username: u
+      git_password: p
+  gl:
+    type: gitlab
+    base_url: http://gl.test
+    credentials:
+      token: tok
+repos:
+  - name: r
+    source: cc
+    target: gl
+    source_path: r
+    target_path: r
+    direction: bidirectional
+`
+
+func loadConfigFrom(t *testing.T, content string) *Config {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	return cfg
+}
+
+// An unset drain window must not become a zero one: shutdown would then wait no
+// time at all and kill every sync in flight, which is the behaviour the setting
+// exists to prevent.
+func TestLoadDefaultsDrainTimeout(t *testing.T) {
+	cfg := loadConfigFrom(t, baseConfig)
+	if cfg.Mirror.DrainTimeoutSeconds != 120 {
+		t.Errorf("DrainTimeoutSeconds = %d, want the 120s default", cfg.Mirror.DrainTimeoutSeconds)
+	}
+}
+
+// An explicit value wins — the point of moving this out of a constant is that
+// the right window depends on the repositories being mirrored.
+func TestLoadHonoursExplicitDrainTimeout(t *testing.T) {
+	cfg := loadConfigFrom(t, baseConfig+`
+mirror:
+  timeout_seconds: 600
+  drain_timeout_seconds: 300
+`)
+	if cfg.Mirror.DrainTimeoutSeconds != 300 {
+		t.Errorf("DrainTimeoutSeconds = %d, want 300", cfg.Mirror.DrainTimeoutSeconds)
+	}
+}
+
+// consumerConfig builds a minimal config with the given mirror/consumer timeouts.
+func consumerConfig(mirrorTimeout, visibility string) string {
+	return `
+mirror:
+` + mirrorTimeout + `
+providers:
+  cc:
+    type: codecommit
+    region: us-east-1
+    credentials:
+      git_username: u
+      git_password: p
+  gl:
+    type: gitlab
+    base_url: http://gl.test
+    credentials:
+      token: tok
+repos:
+  - name: r
+    source: cc
+    target: gl
+    source_path: r
+    target_path: r
+    direction: bidirectional
+consumers:
+  - name: c1
+    queue_url: https://sqs.test/q
+    region: us-east-1
+` + visibility
+}
+
+func loadConsumer(t *testing.T, content string) (*Config, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return Load(path)
+}
+
+// A message is hidden for visibility_timeout_seconds while the batch is handled
+// serially. If that window is shorter than a single sync, the message becomes
+// visible again mid-sync, is redelivered, blocks on the per-repo mutex, and
+// eventually lands in the DLQ. Config must make that impossible.
+func TestLoad_VisibilityTimeoutCoversSyncTimeout(t *testing.T) {
+	t.Run("defaults to mirror timeout", func(t *testing.T) {
+		cfg, err := loadConsumer(t, consumerConfig("  timeout_seconds: 600", ""))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := cfg.Consumers[0].VisibilityTimeoutSeconds; got != 600 {
+			t.Errorf("visibility timeout = %d, want 600 (mirror.timeout_seconds)", got)
+		}
+	})
+
+	t.Run("rejects a window shorter than one sync", func(t *testing.T) {
+		_, err := loadConsumer(t, consumerConfig("  timeout_seconds: 600", "    visibility_timeout_seconds: 120"))
+		if err == nil {
+			t.Fatal("expected an error: 120s cannot cover a 600s sync")
+		}
+		if !strings.Contains(err.Error(), "visibility_timeout_seconds") {
+			t.Errorf("error should name the field, got: %v", err)
+		}
+	})
+
+	t.Run("accepts an explicit longer window", func(t *testing.T) {
+		cfg, err := loadConsumer(t, consumerConfig("  timeout_seconds: 300", "    visibility_timeout_seconds: 1800"))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := cfg.Consumers[0].VisibilityTimeoutSeconds; got != 1800 {
+			t.Errorf("visibility timeout = %d, want 1800", got)
+		}
+	})
+
+	t.Run("rejects above the SQS maximum", func(t *testing.T) {
+		_, err := loadConsumer(t, consumerConfig("  timeout_seconds: 300", "    visibility_timeout_seconds: 43201"))
+		if err == nil || !strings.Contains(err.Error(), "43200") {
+			t.Fatalf("expected the SQS 12h cap to be enforced, got: %v", err)
+		}
+	})
+}
+
+// writeCfg is a small helper for the collision tests below.
+func writeCfg(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestLoad_CollidingDispatchEndpoints pins down that the dispatch key is
+// (provider name, path).
+//
+// The webhook narrows the payload's instance host all the way down to the provider
+// name, so two instances of the same type carrying the same path still take separate
+// directions — the gitlab↔gitlab same-path setup that the old (type, path) key
+// rejected is valid now. The same provider claiming the same path twice, on the other
+// hand, is a real collision that the host cannot separate either, so it stays
+// rejected. Under a rule that stops at the first match, that second claimant dies
+// with neither an error nor a log line.
+func TestLoad_CollidingDispatchEndpoints(t *testing.T) {
+	const providers = `
+providers:
+  gl_a:
+    type: gitlab
+    base_url: http://a.test
+    credentials: {}
+  gl_b:
+    type: gitlab
+    base_url: http://b.test
+    credentials: {}
+  cc:
+    type: codecommit
+    region: us-east-1
+    credentials: {}
+`
+	tests := []struct {
+		name    string
+		repos   string
+		wantErr bool
+	}{
+		{
+			// The same provider claims the same path twice (A's target = B's source).
+			// The host is the same, so narrowing does not separate them — B is
+			// swallowed by A forever.
+			name: "same provider owns one path as A's target and B's source",
+			repos: `
+  - name: a
+    source: cc
+    target: gl_a
+    source_path: r
+    target_path: shared
+    direction: bidirectional
+  - name: b
+    source: gl_a
+    target: cc
+    source_path: shared
+    target_path: r2
+    direction: bidirectional`,
+			wantErr: true,
+		},
+		{
+			// Two entries take the same path on the same provider as their target.
+			name: "same provider, same path as two targets",
+			repos: `
+  - name: a
+    source: cc
+    target: gl_a
+    source_path: r1
+    target_path: shared
+    direction: bidirectional
+  - name: b
+    source: cc
+    target: gl_a
+    source_path: r2
+    target_path: shared
+    direction: bidirectional`,
+			wantErr: true,
+		},
+		{
+			// The old constraint, case 1. A setup that ties two instances of the same
+			// type to the same path, which is valid now because the host narrows it
+			// all the way down to the provider name.
+			name: "same type, different instances, same path is fine",
+			repos: `
+  - name: a
+    source: gl_a
+    target: gl_b
+    source_path: same
+    target_path: same
+    direction: bidirectional`,
+			wantErr: false,
+		},
+		{
+			// One path is A's target and also B's source, but on different instances.
+			name: "different instances share a path across entries",
+			repos: `
+  - name: a
+    source: cc
+    target: gl_a
+    source_path: r
+    target_path: shared
+    direction: bidirectional
+  - name: b
+    source: gl_b
+    target: cc
+    source_path: shared
+    target_path: r2
+    direction: bidirectional`,
+			wantErr: false,
+		},
+		{
+			// Different types make dispatch split, so the same path is fine. Guards against over-rejecting.
+			name: "same path on different provider types is fine",
+			repos: `
+  - name: a
+    source: cc
+    target: gl_a
+    source_path: same
+    target_path: same
+    direction: bidirectional`,
+			wantErr: false,
+		},
+		{
+			// A real gitlab↔gitlab setup. The type is the same but the paths differ, so it is valid.
+			name: "same type, different paths is fine",
+			repos: `
+  - name: a
+    source: gl_a
+    target: gl_b
+    source_path: backup/x
+    target_path: test/x
+    direction: bidirectional`,
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeCfg(t, providers+"repos:"+tc.repos+"\n"))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected a colliding dispatch endpoint to be rejected; the later entry would silently never run")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("valid config rejected: %v", err)
+			}
+		})
+	}
+}
+
+// --- HostResolver ---
+
+// TestConfig_HostResolver pins down the host index built out of the base_url values.
+// That index is the only thing the webhook has to go on when identifying an instance.
+func TestConfig_HostResolver(t *testing.T) {
+	cfg := &Config{Providers: map[string]ProviderConfig{
+		"gitlab-main": {Type: "gitlab", BaseURL: "http://gitlab.example.com"},
+		"gitlab-old":  {Type: "gitlab", BaseURL: "http://gitlab-old.example.com/"},
+		// A provider with no base_url is not indexed.
+		"codecommit-eu": {Type: "codecommit", Region: "ap-northeast-2"},
+		"github-main":   {Type: "github"},
+	}}
+
+	got := cfg.HostResolver()
+	want := HostResolver{
+		"gitlab.example.com":     "gitlab-main",
+		"gitlab-old.example.com": "gitlab-old",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("index = %v, want %v", got, want)
+	}
+	for host, name := range want {
+		if got[host] != name {
+			t.Errorf("index[%q] = %q, want %q", host, got[host], name)
+		}
+	}
+}
+
+// TestConfig_HostResolver_AmbiguousHostIsDropped — when two providers claim the same
+// host, the host does not separate them either. Picking one of them at random mirrors
+// silently in the wrong direction, so the host is dropped from the index entirely and
+// left to fall through to type matching.
+func TestConfig_HostResolver_AmbiguousHostIsDropped(t *testing.T) {
+	cfg := &Config{Providers: map[string]ProviderConfig{
+		"gl_a": {Type: "gitlab", BaseURL: "http://same.example.com"},
+		"gl_b": {Type: "gitlab", BaseURL: "http://same.example.com/subpath"},
+		"gl_c": {Type: "gitlab", BaseURL: "http://other.example.com"},
+	}}
+
+	got := cfg.HostResolver()
+	if name, ok := got["same.example.com"]; ok {
+		t.Errorf("ambiguous host resolved to %q; it must be dropped so dispatch falls back to type matching", name)
+	}
+	if got["other.example.com"] != "gl_c" {
+		t.Errorf("unambiguous host was lost: %v", got)
+	}
+}
+
+// TestHostResolver_Resolve pins down how the payload-side input is normalized.
+func TestHostResolver_Resolve(t *testing.T) {
+	r := HostResolver{
+		"gitlab.example.com":      "gitlab-main",
+		"gitlab.example.com:8443": "gitlab-alt",
+	}
+	tests := []struct {
+		name, rawURL, want string
+	}{
+		{"plain", "http://gitlab.example.com/group/repo", "gitlab-main"},
+		{"case folded", "HTTP://GitLab.Example.COM/group/repo", "gitlab-main"},
+		{"port is part of the identity", "https://gitlab.example.com:8443/group/repo", "gitlab-alt"},
+		{"scheme-less host", "gitlab.example.com/group/repo", "gitlab-main"},
+		{"empty", "", ""},
+		{"whitespace", "   ", ""},
+		{"unknown host", "https://elsewhere.example.com/group/repo", ""},
+		{"path only", "/group/repo", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := r.Resolve(tc.rawURL); got != tc.want {
+				t.Errorf("Resolve(%q) = %q, want %q", tc.rawURL, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHostResolver_NilIsSafe — with a nil index it must narrow nothing and fall back quietly.
+func TestHostResolver_NilIsSafe(t *testing.T) {
+	var r HostResolver
+	if got := r.Resolve("http://gitlab.example.com/group/repo"); got != "" {
+		t.Errorf("nil resolver returned %q, want an empty string", got)
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"git-bridge/internal/consumer"
 	"git-bridge/internal/mirror"
+	"git-bridge/internal/task"
 )
 
 func TestHealthHandler(t *testing.T) {
@@ -26,7 +27,7 @@ func TestHealthHandler(t *testing.T) {
 	}
 
 	var body map[string]string
-	json.NewDecoder(resp.Body).Decode(&body)
+	_ = json.NewDecoder(resp.Body).Decode(&body)
 
 	if body["status"] != "ok" {
 		t.Errorf("status = %q, want ok", body["status"])
@@ -118,7 +119,7 @@ func (m *mockRetrier) Retry(_ context.Context, _, _ string, _ mirror.EventMeta) 
 }
 
 func TestNewMux_WithWebhook(t *testing.T) {
-	wh := consumer.NewWebhook(context.Background(), &mockMirrorer{}, "", "")
+	wh := consumer.NewWebhook(task.NewGroup(context.Background()), &mockMirrorer{}, "", "", nil)
 	mux := NewMux(wh, nil)
 
 	// /health
@@ -149,7 +150,7 @@ func TestNewMux_WithWebhook(t *testing.T) {
 }
 
 func TestNewMux_WithRetry(t *testing.T) {
-	retry := consumer.NewRetry(context.Background(), &mockRetrier{}, "tok")
+	retry := consumer.NewRetry(task.NewGroup(context.Background()), &mockRetrier{}, "tok")
 	mux := NewMux(nil, retry)
 
 	// Authorized POST should reach the handler and be accepted (200).
@@ -166,7 +167,7 @@ func TestNewMux_WithRetry(t *testing.T) {
 
 func TestNewMux_RetryDisabledTokenUnset(t *testing.T) {
 	// Empty token disables the endpoint — handler must return 404.
-	retry := consumer.NewRetry(context.Background(), &mockRetrier{}, "")
+	retry := consumer.NewRetry(task.NewGroup(context.Background()), &mockRetrier{}, "")
 	mux := NewMux(nil, retry)
 
 	req := httptest.NewRequest(http.MethodPost, "/retry/mirror", bytes.NewReader([]byte(`{}`)))
@@ -202,7 +203,7 @@ func TestRunServer_PortInUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to bind: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	port := ln.Addr().(*net.TCPAddr).Port
 

@@ -3,8 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Git Bridge - API Docs</title>
-<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+<title>Git Bridge — API Docs</title>
+<!-- Pin the version and verify integrity with SRI. This page shares an origin with
+     POST /retry/mirror, which triggers real mirror pushes, so a compromised CDN
+     would run in that context. Update the integrity hashes together with the version. -->
+<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.32.11/swagger-ui.css"
+      integrity="sha384-9Q2fpS+xeS4ffJy6CagnwoUl+4ldAYhOs9pgZuEKxypVModhmZFzeMlvVsAjf7uT" crossorigin="anonymous">
 <style>
   body { margin: 0; }
   #swagger-ui .topbar { display: none; }
@@ -12,219 +16,22 @@
 </head>
 <body>
 <div id="swagger-ui"></div>
-<script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script src="https://unpkg.com/swagger-ui-dist@5.32.11/swagger-ui-bundle.js"
+        integrity="sha384-vfl/klfTFrIz5urj0HnhcXLAbzPdRHezizfy+XgFB6GqcKkhlk0lS3bIbyB39NLA" crossorigin="anonymous"></script>
 <script>
+// The spec lives in a separate file (openapi.json) rather than inline here, so a
+// unit test can compare it against the route table on its own.
+//
+// The URL must stay relative. Today this service is reached directly on its public
+// host, but the planned console will sit behind the portal reverse proxy, which
+// strips a path prefix before forwarding — an absolute "/openapi.json" would then
+// escape to the portal root.
 SwaggerUIBundle({
   dom_id: '#swagger-ui',
   deepLinking: true,
-  presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+  presets: [SwaggerUIBundle.presets.apis],
   layout: "BaseLayout",
-  spec: {
-    "openapi": "3.0.3",
-    "info": {
-      "title": "Git Bridge API",
-      "description": "Multi-provider git repository mirroring service.\n\nSupports CodeCommit, GitLab, and GitHub with SQS event-driven and webhook-based synchronization.",
-      "version": "1.0.0"
-    },
-    "paths": {
-      "/health": {
-        "get": {
-          "tags": ["Health"],
-          "summary": "Liveness probe",
-          "description": "Returns service health status. Used by Kubernetes liveness probe.",
-          "responses": {
-            "200": {
-              "description": "Service is running",
-              "content": {
-                "application/json": {
-                  "schema": { "$ref": "#/components/schemas/HealthResponse" },
-                  "example": { "status": "ok", "service": "git-bridge" }
-                }
-              }
-            }
-          }
-        }
-      },
-      "/ready": {
-        "get": {
-          "tags": ["Health"],
-          "summary": "Readiness probe",
-          "description": "Returns service readiness status. Used by Kubernetes readiness probe.",
-          "responses": {
-            "200": {
-              "description": "Service is ready to accept requests",
-              "content": {
-                "application/json": {
-                  "schema": { "$ref": "#/components/schemas/HealthResponse" },
-                  "example": { "status": "ok", "service": "git-bridge" }
-                }
-              }
-            }
-          }
-        }
-      },
-      "/api-docs": {
-        "get": {
-          "tags": ["Docs"],
-          "summary": "API documentation",
-          "description": "This Swagger UI page.",
-          "responses": {
-            "200": {
-              "description": "HTML documentation page",
-              "content": { "text/html": {} }
-            }
-          }
-        }
-      },
-      "/webhook/gitlab": {
-        "post": {
-          "tags": ["Webhooks"],
-          "summary": "GitLab push event webhook",
-          "description": "Receives push events from GitLab and triggers mirror sync for the matching repository.\n\nThe `project.path_with_namespace` field is used to match against `target_path` or `source_path` in the repo configuration.",
-          "parameters": [
-            {
-              "name": "X-Gitlab-Token",
-              "in": "header",
-              "required": false,
-              "description": "Secret token for webhook verification. Required only when `WEBHOOK_GITLAB_SECRET` is configured.",
-              "schema": { "type": "string" }
-            }
-          ],
-          "requestBody": {
-            "required": true,
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/GitLabPushEvent" },
-                "example": {
-                  "event_name": "push",
-                  "ref": "refs/heads/main",
-                  "repository": { "name": "my-repo" },
-                  "project": { "path_with_namespace": "team/my-repo" }
-                }
-              }
-            }
-          },
-          "responses": {
-            "200": {
-              "description": "Event accepted, mirror sync started asynchronously",
-              "content": {
-                "application/json": {
-                  "example": { "status": "accepted" }
-                }
-              }
-            },
-            "400": { "description": "Invalid request body" },
-            "401": { "description": "Invalid or missing token" },
-            "405": { "description": "Method not allowed (POST only)" }
-          }
-        }
-      },
-      "/webhook/github": {
-        "post": {
-          "tags": ["Webhooks"],
-          "summary": "GitHub push event webhook",
-          "description": "Receives push events from GitHub and triggers mirror sync for the matching repository.\n\nThe `repository.full_name` field is used to match against `target_path` or `source_path` in the repo configuration.",
-          "parameters": [
-            {
-              "name": "X-Hub-Signature-256",
-              "in": "header",
-              "required": false,
-              "description": "HMAC-SHA256 signature of the request body (`sha256=<hex>`). Required only when `WEBHOOK_GITHUB_SECRET` is configured.",
-              "schema": { "type": "string", "example": "sha256=abc123..." }
-            }
-          ],
-          "requestBody": {
-            "required": true,
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/GitHubPushEvent" },
-                "example": {
-                  "ref": "refs/heads/main",
-                  "repository": { "name": "my-repo", "full_name": "org/my-repo" }
-                }
-              }
-            }
-          },
-          "responses": {
-            "200": {
-              "description": "Event accepted, mirror sync started asynchronously",
-              "content": {
-                "application/json": {
-                  "example": { "status": "accepted" }
-                }
-              }
-            },
-            "400": { "description": "Invalid request body" },
-            "401": { "description": "Invalid or missing secret" },
-            "405": { "description": "Method not allowed (POST only)" }
-          }
-        }
-      }
-    },
-    "components": {
-      "schemas": {
-        "HealthResponse": {
-          "type": "object",
-          "properties": {
-            "status": { "type": "string", "example": "ok" },
-            "service": { "type": "string", "example": "git-bridge" }
-          }
-        },
-        "GitLabPushEvent": {
-          "type": "object",
-          "properties": {
-            "event_name": { "type": "string", "description": "Event type", "example": "push" },
-            "ref": { "type": "string", "description": "Branch or tag reference", "example": "refs/heads/main" },
-            "repository": {
-              "type": "object",
-              "properties": {
-                "name": { "type": "string", "example": "my-repo" }
-              }
-            },
-            "project": {
-              "type": "object",
-              "properties": {
-                "path_with_namespace": { "type": "string", "description": "Full project path used for repo matching", "example": "team/my-repo" }
-              }
-            }
-          }
-        },
-        "GitHubPushEvent": {
-          "type": "object",
-          "properties": {
-            "ref": { "type": "string", "description": "Branch or tag reference", "example": "refs/heads/main" },
-            "repository": {
-              "type": "object",
-              "properties": {
-                "name": { "type": "string", "example": "my-repo" },
-                "full_name": { "type": "string", "description": "Full repository name used for repo matching", "example": "org/my-repo" }
-              }
-            }
-          }
-        },
-        "CodeCommitEvent": {
-          "type": "object",
-          "description": "EventBridge event consumed via SQS (not an HTTP endpoint)",
-          "properties": {
-            "detail": {
-              "type": "object",
-              "properties": {
-                "repositoryName": { "type": "string", "description": "CodeCommit repository name", "example": "my-repo" },
-                "referenceName": { "type": "string", "description": "Branch or tag reference", "example": "refs/heads/main" },
-                "referenceType": { "type": "string", "enum": ["branch", "tag"], "example": "branch" },
-                "event": { "type": "string", "enum": ["referenceCreated", "referenceUpdated", "referenceDeleted"], "example": "referenceUpdated" }
-              }
-            }
-          }
-        }
-      }
-    },
-    "tags": [
-      { "name": "Health", "description": "Kubernetes health check endpoints" },
-      { "name": "Docs", "description": "API documentation" },
-      { "name": "Webhooks", "description": "Git provider webhook endpoints for mirror sync" }
-    ]
-  }
+  url: "openapi.json"
 });
 </script>
 </body>
