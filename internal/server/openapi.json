@@ -145,6 +145,9 @@
           "401": {
             "description": "Invalid or missing token"
           },
+          "413": {
+            "description": "Request body over `webhook.max_body_size_mb` (default 10 MB). The body is refused outright rather than truncated — a truncated one would surface as a 400 naming neither the size nor the limit. Note that a proxy in front may answer 413 first."
+          },
           "405": {
             "description": "Method not allowed (POST only)"
           }
@@ -203,6 +206,9 @@
           },
           "401": {
             "description": "Invalid or missing secret"
+          },
+          "413": {
+            "description": "Request body over `webhook.max_body_size_mb` (default 10 MB). The body is refused outright rather than truncated — a truncated one would surface as a 400 naming neither the size nor the limit. Note that a proxy in front may answer 413 first."
           },
           "405": {
             "description": "Method not allowed (POST only)"
@@ -267,6 +273,9 @@
           },
           "401": {
             "description": "Missing, malformed, or incorrect bearer token"
+          },
+          "413": {
+            "description": "Request body over 4 KB. This payload is a handful of short fields, so the cap is far below the webhook one."
           },
           "404": {
             "description": "Endpoint disabled (`RETRY_API_TOKEN` is empty)"

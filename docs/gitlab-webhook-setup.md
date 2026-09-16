@@ -118,6 +118,8 @@ No webhook is needed for `server/repo-b` (source-to-target).
 | HTTP 401 Unauthorized | Secret token mismatch | Ensure `WEBHOOK_GITLAB_SECRET` matches the GitLab webhook secret token |
 | HTTP 405 Method Not Allowed | Wrong HTTP method | Verify webhook URL is correct and GitLab is sending POST |
 | HTTP 400 Bad Request | Invalid payload | Check GitLab webhook event type is set to Push events |
+| HTTP 413 Payload Too Large | The push payload is over the configured cap | Raise `webhook.max_body_size_mb` **and** the body limit of the proxy in front, together — the app refusing what the proxy forwarded is the silent case |
+| Nothing in the git-bridge log at all, and GitLab records a failure | The request never reached the app; a proxy in front rejected it | Check the proxy's own body limit. The app cannot log a request it never received, so GitLab's delivery record is the only evidence |
 | Mirror sync not triggered | Wrong direction | Verify the repo's direction is `target-to-source` or `bidirectional` |
 | Mirror sync not triggered | Wrong `target_path` | Ensure `target_path` in config matches the GitLab project's `path_with_namespace` |
 | Push to source fails (403) | IAM permission denied | Add `codecommit:GitPush` to the IAM policy for the mirror user |

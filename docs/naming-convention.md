@@ -103,6 +103,21 @@ there is no `<NAME>` to put in the middle:
 | `CONFIG_PATH` | — | Read directly from the environment, not from the config file |
 | `WORK_DIR` | — | Same |
 
+<br/>
+
+### Set by the process for its own git children — reserved, never set these in the Deployment
+
+The service re-executes its own binary as git's `GIT_ASKPASS` helper so a token never reaches
+the git command line or `remote.origin.url`. These three names are how the parent hands the
+credential to that child process. Defined in
+[internal/askpass/askpass.go](../internal/askpass/askpass.go).
+
+| Variable | Note |
+|----------|------|
+| `GIT_BRIDGE_ASKPASS` | Set to `1` in the child, and the binary runs as the askpass helper instead of the service. Setting it in the Deployment turns the pod into the helper — it is a reserved name, not a tunable |
+| `GIT_BRIDGE_ASKPASS_USERNAME` | The username the helper prints when git asks for one |
+| `GIT_BRIDGE_ASKPASS_PASSWORD` | The token/password the helper prints when git asks for one |
+
 One variable is per-**repo** rather than per-provider, and so uses the repo name
 as its prefix instead:
 

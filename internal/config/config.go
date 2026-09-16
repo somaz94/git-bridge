@@ -198,9 +198,30 @@ type ConsumerConfig struct {
 	VisibilityTimeoutSeconds int `yaml:"visibility_timeout_seconds"`
 }
 
+// DefaultWebhookMaxBodySizeMB is the webhook body cap used when
+// webhook.max_body_size_mb is unset. Exported so the consumer package states the
+// same number rather than keeping its own copy.
+const DefaultWebhookMaxBodySizeMB = 10
+
 type WebhookConfig struct {
 	GitLabSecret string `yaml:"gitlab_secret"` // X-Gitlab-Token verification
 	GitHubSecret string `yaml:"github_secret"` // GitHub webhook secret
+	// MaxBodySizeMB caps an incoming webhook request body (default: 10).
+	//
+	// 🔴 This must not sit below the body limit of whatever proxy or gateway
+	//   fronts the service. Nothing in this program can read that value, so the
+	//   pairing is on whoever edits either side. Getting it backwards is not a
+	//   loud failure: the gateway forwards a payload this app then refuses, and
+	//   since neither GitLab nor GitHub retries a webhook, the push is simply
+	//   gone until the reconcile CronJob comes round.
+	//
+	// It is configurable rather than a constant because the ceiling is a property
+	// of the repositories being mirrored, not of the program. A GitLab push
+	// payload carries every added/modified/removed path per commit, so a branch
+	// create or a large merge on a repo with many files runs to thousands of
+	// entries — one such push measured 1396 kB where that repository's ordinary
+	// increments are about 2 kB.
+	MaxBodySizeMB int `yaml:"max_body_size_mb"`
 }
 
 // RetryConfig holds settings for the manual retry HTTP endpoint.
@@ -250,6 +271,12 @@ func Load(path string) (*Config, error) {
 	if cfg.Mirror.DrainTimeoutSeconds == 0 {
 		cfg.Mirror.DrainTimeoutSeconds = 120
 	}
+	// An explicit 0 is indistinguishable from an absent key here and so lands on
+	// the default rather than the validator. That is the wanted behaviour — 0 is
+	// not a cap anyone means, and telling the two apart would cost a *int.
+	if cfg.Webhook.MaxBodySizeMB == 0 {
+		cfg.Webhook.MaxBodySizeMB = DefaultWebhookMaxBodySizeMB
+	}
 
 	if err := validate(&cfg); err != nil {
 		return nil, err
@@ -264,6 +291,16 @@ func validate(cfg *Config) error {
 	// bind conflict, but that error does not say why it matters.
 	if cfg.Server.ConsolePort == cfg.Server.Port {
 		return fmt.Errorf("server: console_port must differ from port (both %d) — the console must not share the public listener", cfg.Server.Port)
+	}
+	// A negative or absurd cap is a typo, and both fail in a way that is hard to
+	// read from the outside — 0 would reject every webhook, and a gigabyte-scale
+	// value would let one request pull that much into memory. The upper bound is
+	// deliberately generous: it exists to catch a slipped unit, not to express an
+	// opinion about how big a legitimate payload is.
+	if cfg.Webhook.MaxBodySizeMB < 1 || cfg.Webhook.MaxBodySizeMB > 1024 {
+		return fmt.Errorf(
+			"webhook: max_body_size_mb (%d) must be between 1 and 1024 — and it must not sit below the body limit of whatever proxy or gateway fronts the service, or that proxy forwards payloads this app then refuses",
+			cfg.Webhook.MaxBodySizeMB)
 	}
 	if len(cfg.Repos) == 0 {
 		return fmt.Errorf("no repos configured")

@@ -1359,3 +1359,81 @@ func TestHostResolver_NilIsSafe(t *testing.T) {
 		t.Errorf("nil resolver returned %q, want an empty string", got)
 	}
 }
+
+// baseCfgWithWebhook returns a minimal valid config whose webhook section is
+// whatever the caller passes, so a test can vary just that.
+func baseCfgWithWebhook(webhook string) string {
+	return `
+providers:
+  cc:
+    type: codecommit
+    region: us-east-1
+    credentials:
+      git_username: u
+      git_password: p
+  gl:
+    type: gitlab
+    base_url: http://gl.test
+    credentials:
+      token: tok
+repos:
+  - name: r
+    source: cc
+    target: gl
+    source_path: r
+    target_path: r
+    direction: bidirectional
+` + webhook
+}
+
+// An unset cap must land on the default rather than 0, which would reject every
+// webhook — the config leaves this out far more often than it sets it.
+func TestLoad_DefaultMaxBodySizeMB(t *testing.T) {
+	path := writeCfg(t, baseCfgWithWebhook(""))
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Webhook.MaxBodySizeMB != 10 {
+		t.Errorf("default max_body_size_mb = %d, want 10", cfg.Webhook.MaxBodySizeMB)
+	}
+}
+
+func TestLoad_MaxBodySizeMBExplicit(t *testing.T) {
+	path := writeCfg(t, baseCfgWithWebhook("webhook:\n  max_body_size_mb: 25\n"))
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Webhook.MaxBodySizeMB != 25 {
+		t.Errorf("max_body_size_mb = %d, want 25", cfg.Webhook.MaxBodySizeMB)
+	}
+}
+
+// A slipped unit or a stray minus is a typo whose symptom — every webhook
+// refused, or one request pulling a gigabyte into memory — says nothing about
+// the config. Refuse at startup instead.
+func TestLoad_MaxBodySizeMBOutOfRange(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{"negative", "-1"},
+		{"above the ceiling", "2048"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeCfg(t, baseCfgWithWebhook("webhook:\n  max_body_size_mb: "+tc.value+"\n"))
+
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("max_body_size_mb %s: expected an error, got none", tc.value)
+			}
+			if !strings.Contains(err.Error(), "max_body_size_mb") {
+				t.Errorf("error = %v, want it to name max_body_size_mb", err)
+			}
+		})
+	}
+}

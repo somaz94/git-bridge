@@ -398,8 +398,11 @@ This means any webhook event is automatically routed to the correct sync directi
 
 The scenarios above only use `providers` / `repos` / `consumers`. These remaining
 keys are what the rest of the behavior is tuned with. Fully commented versions of
-all of them live in [examples/config.yaml](../examples/config.yaml) and
-[examples/configmap.yaml](../examples/configmap.yaml).
+all of them live in [examples/configmap.yaml](../examples/configmap.yaml).
+[examples/config.yaml](../examples/config.yaml) carries the `server` / `providers` /
+`repos` / `consumers` / `webhook` / `notification` blocks only — it has no `mirror:`
+or `retry:` block, so `make run` (which points `CONFIG_PATH` at it) starts with
+`/retry/mirror` disabled and returns 404 there.
 
 <br/>
 
@@ -432,6 +435,25 @@ mirror:
 |-----|---------|-------------|
 | `timeout_seconds` | `300` | Budget for **one whole sync** (clone/fetch **plus** push share this single deadline — it is not applied per git command). On expiry the git child is SIGKILLed (`signal: killed`) and the sync is reported as failed. Raise it for large repos whose full clone approaches the limit. It is also the floor for `visibility_timeout_seconds` |
 | `drain_timeout_seconds` | `120` | On SIGTERM the service stops accepting new work, then waits at most this long for syncs already in flight before killing them. It is a cap, not a delay — shutdown returns as soon as the work does. Keep the pod's `terminationGracePeriodSeconds` **above** it, or the kubelet SIGKILLs mid-drain and the wait buys nothing. A sync killed mid-fetch can leave a pack `.keep` marker behind, which excludes that packfile from every later repack until housekeeping prunes it |
+
+<br/>
+
+### `webhook`
+
+```yaml
+webhook:
+  gitlab_secret: "${WEBHOOK_GITLAB_SECRET}"
+  github_secret: "${WEBHOOK_GITHUB_SECRET}"
+  max_body_size_mb: 10
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `gitlab_secret` | *(empty)* | Compared against the `X-Gitlab-Token` header. Empty skips verification |
+| `github_secret` | *(empty)* | Key for the HMAC-SHA256 `X-Hub-Signature-256` signature. Empty skips verification |
+| `max_body_size_mb` | `10` | Cap on an incoming webhook body. Over it, the request is refused with **413** — deliberately not a silent truncation, which would surface later as a JSON parse error naming neither the size nor this limit. Keep it **at or above** the body limit of whatever proxy fronts the service; nothing here can read that value, so the pairing is on whoever edits either side. Get it backwards and the proxy forwards payloads this app then refuses — and since neither GitLab nor GitHub retries a webhook, that push stays missing until the reconcile runs |
+
+Payload size is driven by **how many paths changed**, not by repo size: a push payload carries every added/modified/removed file per commit, so a branch create or a large merge on a repo with many files can run three orders of magnitude past an ordinary incremental push.
 
 <br/>
 

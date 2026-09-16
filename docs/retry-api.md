@@ -137,8 +137,8 @@ A withheld push records `skip` / `destination-ahead` in the history, and a withh
 
 ### 4-2. `ref` behavior
 
-- **Omitted**: `git fetch --prune` + `git push --all --tags`. All missed refs catch up in one call.
-- **Set (e.g. `refs/tags/X`)**: the fetch is still the full incremental one, but **the push is scoped to that single ref** (refspec `+<ref>:<ref>`). If the ref is absent from the local mirror the push is skipped entirely and recorded as `no-refs-to-push`. The ref value is also used to enrich the Slack notification body (`Tag:` / `Branch:` line, commit author lookup).
+- **Omitted**: `git fetch --prune`, then every ref in the local mirror is enumerated and pushed one refspec at a time (`<ref>:<ref>`), each carrying its own `--force-with-lease`, in batches of 500. Missed refs catch up together; a ref whose destination is already ahead is withheld rather than pushed.
+- **Set (e.g. `refs/tags/X`)**: the fetch is still the full incremental one, but **the push is scoped to that single ref** (refspec `<ref>:<ref>` plus `--force-with-lease=<ref>:<destination tip>`; the refspec deliberately carries no `+`, since a per-refspec force overrides the lease without evaluating it). If the ref is absent from the local mirror the push is skipped entirely and recorded as `no-refs-to-push`. The ref value is also used to enrich the Slack notification body (`Tag:` / `Branch:` line, commit author lookup).
 
 > 💡 When several refs are behind, **omit** `ref` — one call sweeps every stuck ref at once. Setting `ref` moves only that one, matching the `RetryRequest.ref` description in `internal/server/openapi.json`: "Optional single ref to sync. Omit to sync every ref."
 
@@ -161,10 +161,11 @@ Success (HTTP 200) — the response is synchronous but the sync runs in a backgr
 | HTTP | Meaning |
 |---|---|
 | **200** | Request accepted, background sync started |
-| **400** | Missing `repo` / invalid `direction` / malformed JSON |
+| **400** | The request failed validation. The reason is carried in the response body as `bad request: <reason>` — see §4 for the full set of rules |
 | **401** | Missing `Authorization` header, missing `Bearer ` prefix, or token mismatch |
 | **404** | Endpoint disabled (`RETRY_API_TOKEN` is unset) |
 | **405** | Method not allowed (only POST) |
+| **413** | Body over 4 KB. This payload is a handful of short fields, so its cap sits far below the webhook one. An oversize body is refused rather than truncated — a truncated one would surface as a 400 naming neither the size nor the limit |
 
 <br/>
 
@@ -237,7 +238,7 @@ curl -X POST https://git-bridge.example.com/retry/mirror \
 | `400 bad request: invalid direction` | `direction` is not one of `source-to-target` / `target-to-source` / `auto`. |
 | `400 bad request: repo required` | `repo` field missing or whitespace-only. |
 | 200 OK but no Slack alert | Background sync may have failed — check `kubectl logs <pod> --tail=50 \| grep retry-api`. `already up-to-date` correctly skips the notification. |
-| `direction does not allow retry direction` | Requested direction conflicts with the repo's one-way setting (e.g. asking `target-to-source` on a `source-to-target` repo). Use `auto` or the correct direction. |
+| `direction does not allow retry direction` | Requested direction conflicts with the repo's one-way setting (e.g. asking `target-to-source` on a `source-to-target` repo). 🔴 **The HTTP response is still 200** — this message only reaches the pod log (`retry sync failed`), as it does for an unknown `repo`. Use `auto` or the correct direction. |
 
 <br/>
 

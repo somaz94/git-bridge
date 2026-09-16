@@ -111,6 +111,7 @@ Git-Bridge sends notifications in the following cases:
 | Ref delete failure | `Ref Delete Failed` | `error` (❌) | Failed to delete ref |
 | Ref restore success | `Ref Restored` | `success` (✅) | A console click put back a ref a delete removed, at the tip that delete recorded. The body carries `Restored tip: <sha>` and `Restored by: <actor>`. The actor is on it because this writes to a real repository — unlike a webhook or SQS event, which has a pusher rather than an operator, someone chose to do this and the channel is where that becomes visible |
 | Ref restore failure | `Ref Restore Failed` | `error` (❌) | The restore was refused or failed. The body carries `Requested by: <actor>` and `Error: <what>`. All three exits send the same shape — the ref already exists on the destination, git has garbage-collected the commit, or the push failed — so a refusal is as legible in the channel as a success. A refusal is the expected outcome when someone re-created the branch in the meantime, not an incident |
+| Push withheld | `Push Withheld` | `warning` (⚠️) | The push guard withheld at least one **branch** because the destination already holds what this side would have pushed, so writing would have discarded commits there. Nothing was written. The body carries `Route:`, `Target:` and a `Withheld refs:` list (`<ref>: destination is at <sha> (<reason>)`), followed by one ready-to-run `curl … /retry/mirror` force command per held branch — the counterpart of the console's per-ref force button. A late echo settles on its own; a rewind someone meant to make does not, which is what this alert is for. Source: `reportHeld()` in [internal/mirror/mirror.go](../internal/mirror/mirror.go) |
 | Forced overwrite | `Forced Update` | `error` (❌) | The push succeeded, but at least one **branch** was overwritten non-fast-forward, so commits reachable only from the old tip are gone from the destination. The body lists each overwritten ref as `<ref>: <old> → <new>` plus a `git fetch <clone-url> <old>` recovery line per branch. It **replaces** the success notification for that push, rather than arriving alongside it — the two together would read as a contradiction — which is why it carries route, duration and target itself |
 
 > No notification is sent when the push is already up-to-date (loop detection).
@@ -119,9 +120,10 @@ Git-Bridge sends notifications in the following cases:
 > alert: a pipeline that reuses build tag names re-points them constantly, and an
 > alert that fires on routine traffic is one people learn to ignore.
 >
-> The notifier also understands a `warning` (⚠️) level, but nothing currently
-> emits it — the forced-overwrite alert is `error`, so it is not filtered out of a
-> channel watching only failures.
+> `warning` (⚠️) is emitted by `Push Withheld`, and the forced-overwrite alert is
+> `error` — so neither is filtered out of a channel watching only failures. Note that
+> a filter narrowed to `error` alone WOULD drop `Push Withheld`, which is the one
+> alert asking an operator to decide whether a rewind should go through.
 >
 > Every message is sent as a Slack **attachment** with a colour bar keyed to the
 > level: `success` green (`#2eb886`), `warning` amber (`#daa038`), `error` red

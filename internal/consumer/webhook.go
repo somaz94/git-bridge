@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,9 +15,6 @@ import (
 	"git-bridge/internal/mirror"
 	"git-bridge/internal/task"
 )
-
-// maxBodySize is the maximum allowed webhook request body size (1MB).
-const maxBodySize = 1 << 20
 
 const (
 	headerGitLabToken     = "X-Gitlab-Token"
@@ -80,20 +78,47 @@ type Webhook struct {
 	// hosts is the index that turns the payload's instance host into a provider
 	// name. When nil, events dispatch by type alone, with no narrowing, as before.
 	hosts config.HostResolver
+	// maxBodySize caps an incoming request body, in bytes. Set through
+	// WithMaxBodySizeMB; zero means defaultMaxBodySizeMB.
+	maxBodySize int64
+}
+
+// WebhookOption tunes a Webhook after its dependencies are supplied.
+//
+// The knobs live here rather than in the constructor signature because they are
+// settings, not dependencies: a caller that has no opinion should not have to
+// state one, and the existing five arguments are already the limit of what reads
+// clearly positionally.
+type WebhookOption func(*Webhook)
+
+// WithMaxBodySizeMB caps incoming webhook request bodies at mb megabytes.
+// Values below 1 are ignored so a zeroed config cannot silently reject every
+// event; config validation is what rejects a bad value out loud.
+func WithMaxBodySizeMB(mb int) WebhookOption {
+	return func(w *Webhook) {
+		if mb >= 1 {
+			w.maxBodySize = int64(mb) << 20
+		}
+	}
 }
 
 // NewWebhook creates a new webhook consumer. Syncs it starts run under tasks.
 //
 // hosts is the base_url host → provider name index (config.Config.HostResolver);
 // when it is nil or empty, every event dispatches by type alone exactly as before.
-func NewWebhook(tasks *task.Group, mirrorSvc Mirrorer, gitlabSecret, githubSecret string, hosts config.HostResolver) *Webhook {
-	return &Webhook{
+func NewWebhook(tasks *task.Group, mirrorSvc Mirrorer, gitlabSecret, githubSecret string, hosts config.HostResolver, opts ...WebhookOption) *Webhook {
+	w := &Webhook{
 		tasks:        tasks,
 		mirrorSvc:    mirrorSvc,
 		gitlabSecret: gitlabSecret,
 		githubSecret: githubSecret,
 		hosts:        hosts,
+		maxBodySize:  config.DefaultWebhookMaxBodySizeMB << 20,
 	}
+	for _, opt := range opts {
+		opt(w)
+	}
+	return w
 }
 
 // pushEvent abstracts pulling the repo path, ref and pusher out of a per-provider
@@ -144,11 +169,26 @@ func (e *GitHubPushEvent) instanceURL() (string, bool) {
 	return "", false
 }
 
-// readLimitedBody reads the request body up to maxBodySize and writes a 400 on
-// failure. When ok=false the caller must return immediately.
-func readLimitedBody(rw http.ResponseWriter, r *http.Request, logPrefix string) (body []byte, ok bool) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize))
+// readLimitedBody reads the request body up to w.maxBodySize and writes an error
+// response on failure. When ok=false the caller must return immediately.
+//
+// 🔴 http.MaxBytesReader, not io.LimitReader. LimitReader stops at the cap and
+// reports a clean EOF, so io.ReadAll returns a *truncated* body with err=nil and
+// the failure only surfaces downstream as "unexpected end of JSON input" — an
+// error that says nothing about size and points at the sender's payload rather
+// than at this limit. That misdirection is what made the 2026-09-15 drop take a
+// second round of digging; the incident is written up on
+// config.WebhookConfig.MaxBodySizeMB. MaxBytesReader fails loudly and lets us
+// answer 413, which is both true and actionable.
+func (w *Webhook) readLimitedBody(rw http.ResponseWriter, r *http.Request, logPrefix string) (body []byte, ok bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(rw, r.Body, w.maxBodySize))
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			slog.Error(logPrefix+": body too large", "limit_bytes", w.maxBodySize)
+			http.Error(rw, "payload too large", http.StatusRequestEntityTooLarge)
+			return nil, false
+		}
 		slog.Error(logPrefix+": read body failed", "error", err)
 		http.Error(rw, "bad request", http.StatusBadRequest)
 		return nil, false
@@ -232,7 +272,7 @@ func (w *Webhook) GitLabHandler(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	body, ok := readLimitedBody(rw, r, "gitlab webhook")
+	body, ok := w.readLimitedBody(rw, r, "gitlab webhook")
 	if !ok {
 		return
 	}
@@ -246,7 +286,7 @@ func (w *Webhook) GitHubHandler(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, ok := readLimitedBody(rw, r, "github webhook")
+	body, ok := w.readLimitedBody(rw, r, "github webhook")
 	if !ok {
 		return
 	}

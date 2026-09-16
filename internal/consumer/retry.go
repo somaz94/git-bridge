@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -73,6 +74,10 @@ type Retry struct {
 	apiToken  string
 }
 
+// maxRetryBodySize bounds the retry API request body. That payload is a handful
+// of short fields, so it has no reason to share the webhook's headroom.
+const maxRetryBodySize = 4 << 10
+
 // NewRetry constructs a Retry handler. An empty apiToken yields a disabled
 // handler that responds with 404 to every request. Syncs it starts run under
 // tasks.
@@ -112,8 +117,18 @@ func (r *Retry) Handler(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(req.Body, maxBodySize))
+	// MaxBytesReader rather than io.LimitReader, for the reason spelled out on
+	// Webhook.readLimitedBody: LimitReader truncates silently, so an oversize
+	// body would come back here as a JSON parse error that says nothing about
+	// size.
+	body, err := io.ReadAll(http.MaxBytesReader(rw, req.Body, maxRetryBodySize))
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			slog.Error("retry api: body too large", "limit_bytes", maxRetryBodySize)
+			http.Error(rw, "payload too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		slog.Error("retry api: read body failed", "error", err)
 		http.Error(rw, "bad request", http.StatusBadRequest)
 		return

@@ -506,3 +506,40 @@ func TestRetryHandler_OmittedForceIsNotForced(t *testing.T) {
 		t.Error("an omitted force must not be treated as a force")
 	}
 }
+
+// The retry body is a handful of short fields, so its cap is far below the
+// webhook one — and like the webhook path it must refuse an oversize body rather
+// than truncate it into a JSON parse error that names neither the size nor the
+// limit. The 4 KB figure is asserted here so it does not drift back toward the
+// webhook's headroom without someone deciding to move it.
+func TestRetryHandler_BodyOverCapRejected(t *testing.T) {
+	h := NewRetry(task.NewGroup(context.Background()), newMockRetrier(nil), "correct-token")
+
+	// Valid JSON throughout, so a 400 would mean truncation rather than refusal.
+	req := newRetryRequest(t, "correct-token", RetryRequest{
+		Repo:      "x",
+		Direction: "auto",
+		Ref:       strings.Repeat("y", maxRetryBodySize+1),
+	})
+	w := httptest.NewRecorder()
+
+	h.Handler(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413 — a 400 means the body was truncated and failed to parse, not rejected for size", w.Code)
+	}
+}
+
+// A request comfortably inside the cap is untouched by it.
+func TestRetryHandler_BodyUnderCapAccepted(t *testing.T) {
+	h := NewRetry(task.NewGroup(context.Background()), newMockRetrier(nil), "correct-token")
+
+	req := newRetryRequest(t, "correct-token", RetryRequest{Repo: "x", Direction: "auto"})
+	w := httptest.NewRecorder()
+
+	h.Handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}

@@ -109,6 +109,7 @@ GitLab push event payload (sent automatically by GitLab):
 | 400 | Invalid request body |
 | 401 | Invalid or missing `X-Gitlab-Token` |
 | 405 | Method not allowed (only POST) |
+| 413 | Body over `webhook.max_body_size_mb` (default 10 MB). Refused outright rather than truncated — a truncated body would surface as a 400 naming neither the size nor the limit. A proxy in front may answer 413 first |
 
 <br/>
 
@@ -169,6 +170,7 @@ GitHub push event payload (sent automatically by GitHub):
 | 400 | Invalid request body |
 | 401 | Invalid or missing `X-Hub-Signature-256` |
 | 405 | Method not allowed (only POST) |
+| 413 | Body over `webhook.max_body_size_mb` (default 10 MB). Refused outright rather than truncated — a truncated body would surface as a 400 naming neither the size nor the limit. A proxy in front may answer 413 first |
 
 <br/>
 
@@ -232,6 +234,7 @@ returns 404 (different policy from webhook endpoints, which fall back to
 | 401 | Missing or invalid `Authorization` header |
 | 404 | Endpoint disabled (`RETRY_API_TOKEN` not set) |
 | 405 | Method not allowed (only POST) |
+| 413 | Body over 4 KB. This payload is a handful of short fields, so the cap sits far below the webhook one |
 
 The Slack notification body for retry-triggered syncs includes an extra
 `Source: retry-api` line so the on-call operator can immediately distinguish
@@ -410,6 +413,7 @@ actually looking at, in either direction.
 | 404 | Retry not wired up |
 | 405 | Method not allowed (only POST) |
 | 409 | `to` is not a side of that repo, names a direction the repo's `direction` forbids, or names *both* sides — an older-notation destination on a repo that mirrors two instances of the same provider type over the same path, where the side cannot be recovered |
+| 413 | Body over 4 KB. This payload is a handful of short fields, so the cap sits far below the webhook one |
 | 415 | `Content-Type` is not `application/json`. A cross-site form cannot send that type without a preflight, so requiring it keeps this write off the end of a link. `to` picks which side is written, so this route carries the same gate as restore and force |
 
 The sync is recorded with `source: console`, which distinguishes a human click
@@ -468,6 +472,7 @@ Unknown fields are rejected rather than ignored, the same as retry.
 | 403 | A `direction` or `ref_overrides` rule forbids writing to that side |
 | 409 | `no-matching-delete` (no recorded delete matches this repo, destination, ref and commit) or `ref-exists` (the ref is back on the destination) |
 | 410 | `object-gone` — git has garbage-collected the commit; there is nothing left to put back |
+| 413 | Body over 4 KB. This payload is a handful of short fields, so the cap sits far below the webhook one |
 | 500 | `restore-failed` — the push itself failed. Unlike the rows above this is a breakage, not a refusal |
 | 503 | `repo-busy` — a mirror operation holds the per-repo lock. The same request will work once it lands; the restore is refused rather than queued because it runs inside the request and would otherwise hold the connection |
 | 415 | `Content-Type` is not `application/json`. A cross-site form cannot send that type without a preflight, so requiring it keeps this write off the end of a link |
@@ -573,6 +578,7 @@ Unknown fields are rejected rather than ignored.
 | 404 | Force not wired up (no mirror service). `/console/api/me` reports this as `force_enabled: false` so the page hides the button |
 | 405 | Method not allowed (only POST) |
 | 409 | No hold matching this repo, destination and ref is recorded in the visible history. Most often that means the hold already resolved on its own, which is the good outcome |
+| 413 | Body over 4 KB. This payload is a handful of short fields, so the cap sits far below the webhook one |
 | 415 | `Content-Type` is not `application/json`, the same gate restore and retry carry |
 
 **The 409 is the guard on this route.** Without it this is a general "force any
@@ -621,6 +627,6 @@ Not an HTTP endpoint. The SQS consumer polls the configured SQS queue for CodeCo
 #### Behavior
 
 - Long-polling: 20 seconds wait time
-- Visibility timeout: the consumer's `visibility_timeout_seconds`, which defaults to `mirror.timeout_seconds` when unset and may not be lower than it (dev runs 600s). See [ADVANCE.md](ADVANCE.md#visibility_timeout_seconds)
+- Visibility timeout: the consumer's `visibility_timeout_seconds`, which defaults to `mirror.timeout_seconds` when unset and may not be lower than it. See [ADVANCE.md](ADVANCE.md#visibility_timeout_seconds)
 - On success: message deleted from queue
 - On failure: message remains, retried up to 5 times → DLQ

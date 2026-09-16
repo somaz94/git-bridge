@@ -68,7 +68,13 @@ func main() {
 		slog.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("config loaded", "repos", len(cfg.Repos), "providers", len(cfg.Providers))
+	// webhook_max_body_mb is logged because it is a value that has to agree with a
+	// number kept outside this program — the body limit of whatever proxy or
+	// gateway fronts the service. Having the effective one in the pod log makes
+	// that comparison a glance rather than a guess about which config the running
+	// pod actually loaded.
+	slog.Info("config loaded", "repos", len(cfg.Repos), "providers", len(cfg.Providers),
+		"webhook_max_body_mb", cfg.Webhook.MaxBodySizeMB)
 
 	// Init notifier
 	var notifier notify.Notifier
@@ -123,6 +129,7 @@ func main() {
 		cfg.Webhook.GitLabSecret,
 		cfg.Webhook.GitHubSecret,
 		cfg.HostResolver(),
+		consumer.WithMaxBodySizeMB(cfg.Webhook.MaxBodySizeMB),
 	)
 
 	// Init retry consumer (handler returns 404 when token is unset).

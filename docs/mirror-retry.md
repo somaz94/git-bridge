@@ -12,7 +12,7 @@ git-bridge has two sync triggers:
 | Trigger | Automatic retry policy |
 |---|---|
 | **HTTP webhook** (`POST /webhook/gitlab`, `POST /webhook/github`) | None. Single-shot — on failure, only the user / Slack are notified |
-| **SQS event consumer** (CodeCommit → SQS path) | visibility timeout (the consumer's `visibility_timeout_seconds`, defaulting to `mirror.timeout_seconds` — 600s in dev) + max receive count(5), then DLQ |
+| **SQS event consumer** (CodeCommit → SQS path) | visibility timeout (the consumer's `visibility_timeout_seconds` — set explicitly in dev; when unset it follows `mirror.timeout_seconds`, and a smaller value is refused at startup) + max receive count(5), then DLQ |
 
 **If external I/O fails transiently at the webhook moment, the ref is stuck:**
 
@@ -146,7 +146,7 @@ GitHub webhooks use HMAC-SHA256 signature verification (`X-Hub-Signature-256`), 
 1. **GitHub UI redelivery** — Settings → Webhooks → the webhook → Recent Deliveries → Redeliver
 2. **Push a trivial commit** — incremental fetch will sweep in the missed refs
 
-(The future retry API will sidestep the signature — see §4.)
+(The retry API sidesteps the signature — see §4.)
 
 <br/>
 
@@ -156,7 +156,7 @@ SQS itself has retry + DLQ, so usually no action is needed:
 
 | Stage | Behavior |
 |---|---|
-| 1st failure | After the visibility timeout (`visibility_timeout_seconds`, 600s in dev) the message returns to the queue |
+| 1st failure | After the visibility timeout (`visibility_timeout_seconds`; the value lives in the deployed config) the message returns to the queue |
 | 2nd–5th failure | Retried the same way |
 | Beyond 5 | Moved to DLQ |
 
@@ -202,7 +202,7 @@ Advantages over §3-2:
 |---|---|
 | `source-to-target` | sync source → target |
 | `target-to-source` | sync target → source |
-| `auto` (default) | falls back to `target-to-source` on bidirectional; otherwise the repo's single allowed direction |
+| `auto` (default) | the repo's `retry_direction` when set; otherwise bidirectional falls back to `target-to-source` and a one-way repo resolves to its single allowed direction. Full precedence in [retry-api.md](./retry-api.md) §4-1. |
 
 `ref` is optional. Even when omitted, an incremental fetch + push runs — older missed refs catch up at the same time.
 
@@ -212,7 +212,7 @@ Full spec: [docs/API.md `POST /retry/mirror`](./API.md#post-retrymirror).
 
 ### 3-6. Why external POST to `git-bridge.example.com` fails
 
-`git-bridge.example.com` resolves only on the internal DNS. Workstations outside the corp network fail at the connect stage. Use cluster-internal access (pod / service ClusterIP) or the corp network.
+`git-bridge.example.com` resolves only on the internal DNS (the corp network). Workstations outside the corp network fail at the connect stage. Use cluster-internal access (pod / service ClusterIP) or the corp network.
 
 From inside the corp network, an external POST works:
 
@@ -240,7 +240,7 @@ versus the original sketch — useful for future tweaks.
 | Token unset | endpoint **disabled (404)** — opposite of the webhook "skip verification" mode (retry always requires auth) |
 | `repo` lookup key | `RepoConfig.Name` |
 | `direction` enum | `source-to-target` / `target-to-source` / `auto` (default) |
-| `auto` (bidirectional) | falls back to `target-to-source` (2026-05-19 incident pattern) |
+| `auto` (bidirectional) | the repo's `retry_direction` first, otherwise falls back to `target-to-source` (2026-05-19 incident pattern) |
 | `auto` (one-way) | resolves to the repo's single allowed direction |
 | direction conflict | requesting the opposite direction on a one-way repo returns an error (validated inside `mirror.Service.Retry`) |
 | `ref` omitted | incremental fetch + push (catch-up only) |
@@ -375,7 +375,7 @@ Reads `RETRY_API_TOKEN` from the environment and calls the endpoint. Add under `
 
 ## 6. Related docs
 
-- [API Reference](./API.md) — currently exposed endpoints (will be updated once the retry API lands)
+- [API Reference](./API.md) — the full endpoint spec, including `POST /retry/mirror`
 - [GitLab Webhook setup](./gitlab-webhook-setup.md) — webhook URL / secret setup
 - [GitHub Webhook setup](./github-webhook-setup.md) — HMAC signature setup
 - [Advanced Config](./ADVANCE.md) — multi-provider configuration examples

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"git-bridge/internal/config"
 	"git-bridge/internal/consumer"
 	"git-bridge/internal/mirror"
 	"git-bridge/internal/task"
@@ -221,5 +222,38 @@ func TestRunServer_PortInUse(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("server should have exited due to port conflict")
+	}
+}
+
+// The public listener is the one reachable from the internet, and the GitHub
+// handler has to read a body up to webhook.max_body_size_mb before it can verify
+// the HMAC that body is signed with. Unbounded reads on that path let an
+// unauthenticated caller hold the cap in memory for as long as it likes.
+//
+// These fields are trivially dropped in a refactor and nothing about the
+// service's behaviour looks different afterwards, so pin them here rather than
+// trusting the struct literal to stay complete.
+func TestNewPublicServerSetsTimeouts(t *testing.T) {
+	srv := newPublicServer(":0", http.NewServeMux())
+
+	if srv.ReadHeaderTimeout <= 0 {
+		t.Error("ReadHeaderTimeout is unset: a client can hold a connection open on headers alone")
+	}
+	if srv.ReadTimeout <= 0 {
+		t.Error("ReadTimeout is unset: an unauthenticated caller can trickle a body-cap-sized request indefinitely")
+	}
+	if srv.WriteTimeout <= 0 {
+		t.Error("WriteTimeout is unset")
+	}
+
+	// A body at the cap has to fit inside the read budget. Tightening the timeout
+	// below what a legitimate large webhook needs drops it silently — the same
+	// outcome as the truncating reader this cap replaced, since neither GitLab
+	// nor GitHub retries a webhook.
+	const capBytes = config.DefaultWebhookMaxBodySizeMB << 20
+	minRate := float64(capBytes) / srv.ReadTimeout.Seconds()
+	if minRate > 1<<20 {
+		t.Errorf("ReadTimeout %v demands %.0f B/s to deliver a %d-byte body — too strict for a real sender",
+			srv.ReadTimeout, minRate, capBytes)
 	}
 }

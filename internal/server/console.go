@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -327,9 +326,19 @@ func retryHandler(retrier ConsoleRetrier, tasks *task.Group) http.HandlerFunc {
 			To        string `json:"to"`
 			Ref       string `json:"ref"`
 		}
-		dec := json.NewDecoder(io.LimitReader(r.Body, maxRetryBodySize))
+		// MaxBytesReader rather than io.LimitReader: LimitReader truncates at the
+		// cap and reports a clean EOF, so an oversize body would arrive here as
+		// "invalid json" — an answer that names neither the size nor the limit.
+		// See Webhook.readLimitedBody in internal/consumer for the incident that
+		// made that misdirection expensive.
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRetryBodySize))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "payload too large"})
+				return
+			}
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 			return
 		}
@@ -502,9 +511,15 @@ func forceHandler(forcer PushForcer, reader history.Reader, tasks *task.Group) h
 			Ref  string `json:"ref"`
 			Dest string `json:"dest"`
 		}
-		dec := json.NewDecoder(io.LimitReader(r.Body, maxRetryBodySize))
+		// MaxBytesReader, for the reason given on the retry handler above.
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRetryBodySize))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "payload too large"})
+				return
+			}
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 			return
 		}
@@ -611,9 +626,15 @@ func restoreHandler(restorer RefRestorer, reader history.Reader) http.HandlerFun
 			Ref  string `json:"ref"`
 			SHA  string `json:"sha"`
 		}
-		dec := json.NewDecoder(io.LimitReader(r.Body, maxRetryBodySize))
+		// MaxBytesReader, for the reason given on the retry handler above.
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRetryBodySize))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "payload too large"})
+				return
+			}
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 			return
 		}

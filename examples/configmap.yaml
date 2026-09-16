@@ -180,6 +180,7 @@ data:
     webhook:
       gitlab_secret: "${WEBHOOK_GITLAB_SECRET}"           # empty = skip verification
       github_secret: "${WEBHOOK_GITHUB_SECRET}"           # empty = skip verification
+      max_body_size_mb: 10                                # keep >= the front proxy's body limit
 
     retry:
       api_token: "${RETRY_API_TOKEN}"                     # empty = endpoint disabled (404)

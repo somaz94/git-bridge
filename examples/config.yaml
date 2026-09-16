@@ -205,6 +205,12 @@ consumers:
 webhook:
   gitlab_secret: "${WEBHOOK_GITLAB_SECRET}"               # X-Gitlab-Token header verification
   github_secret: "${WEBHOOK_GITHUB_SECRET}"               # HMAC-SHA256 signature verification
+  # Cap on an incoming webhook body, in MB (default: 10). Keep it at or above the
+  # body limit of whatever proxy sits in front, or that proxy forwards payloads
+  # this app then refuses — and neither GitLab nor GitHub retries a webhook.
+  # A branch create or a large merge is what gets big: the payload carries every
+  # changed path per commit, so a repo with many files runs to thousands of entries.
+  max_body_size_mb: 10
 
 # =============================================================================
 # Notification

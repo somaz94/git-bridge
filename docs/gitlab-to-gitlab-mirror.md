@@ -1,8 +1,12 @@
 # GitLab ↔ GitLab Bidirectional Mirror Setup
 
-Setup procedure for mirroring between a legacy GitLab instance (`gitlab-old.example.com`, 13.12)
-and the current one (`gitlab.example.com`, 19.2) with git-bridge — and the **constraints that
-only surface in this combination**.
+Setup procedure for mirroring between a legacy GitLab instance (`gitlab-old.example.com`) and
+the current one (`gitlab.example.com`) with git-bridge — and the **constraints that only
+surface in this combination**.
+
+> The 13.12 notes below describe the legacy instance as it stood in 2026-08, when this pair was
+> built; it has since completed its upgrade to the 19.x line, so any version-bound constraint
+> is worth revisiting.
 
 Unlike the existing pairs (CodeCommit ↔ GitLab), **both providers here share the same type**, so
 adding a repo entry naively misbehaves in five places. Config validation refuses startup for the
@@ -15,8 +19,8 @@ the procedure.
 
 | Role | Instance | Path | Provider name |
 |---|---|---|---|
-| source | `gitlab-old.example.com` (13.12) | `backup/git-bridge-test` | `gitlab-old` |
-| target | `gitlab.example.com` (19.2) | `test/git-bridge-test` | `gitlab-main` |
+| source | `gitlab-old.example.com` | `backup/git-bridge-test` | `gitlab-old` |
+| target | `gitlab.example.com` | `test/git-bridge-test` | `gitlab-main` |
 
 ```yaml
 repos:
@@ -252,7 +256,7 @@ will ever mirror. That rules out most token types.
 | Token type | Coverage | Verdict |
 |---|---|---|
 | Project access token | 1 repo | ❌ re-seal and redeploy for every repo added |
-| Group access token | whole group | ❌ requires GitLab **14.7+** — unavailable on 13.12 |
+| Group access token | whole group | ❌ requires GitLab **14.7+**, which gitlab-old did not meet when this pair was built — revisit now that it has been upgraded |
 | User PAT | everything the user can reach | ✅ the only option |
 
 Create a dedicated service account and give it coverage through **group Maintainer membership**,
@@ -277,8 +281,10 @@ chmod 600 /tmp/gb-old-token.txt
 ```
 
 **`read_repository` + `write_repository` are sufficient.** git-bridge never calls the GitLab API —
-`internal/provider/gitlab.go` only assembles clone URLs — and talks git over
-`http://oauth2:<token>@host/path.git`. Leaving `api` out means a leaked token cannot touch the API.
+`internal/provider/gitlab.go` only assembles clone URLs — and talks git to
+`http://<host>/<path>.git`, handing the token over the `GIT_ASKPASS` side channel
+(`internal/askpass`) rather than embedding it in the URL; `oauth2` is only the Basic-auth user
+name. Leaving `api` out means a leaked token cannot touch the API.
 
 > ⚠️ **Passing `-f "scopes[]=..."` returns HTTP 400.** `glab api` sends the POST body as JSON, so
 > `scopes[]` becomes a literal key and GitLab rejects the request for a missing `scopes`.

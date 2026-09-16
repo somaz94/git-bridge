@@ -850,3 +850,110 @@ func TestGitLabPushEvent_ParsesWebURL(t *testing.T) {
 		t.Errorf("instanceURL() = (%q, %v), want the web_url and routable=true", url, routable)
 	}
 }
+
+// padPayload returns a valid GitLab push payload inflated to at least size bytes
+// by stuffing the commit file lists — which is exactly how a real payload gets
+// big: GitLab carries every added/modified/removed path per commit, so a branch
+// create or a large merge on a repo with many files runs to thousands of entries.
+func padPayload(t *testing.T, size int) []byte {
+	t.Helper()
+
+	payload := GitLabPushEvent{EventName: "push", Ref: "refs/heads/main"}
+	payload.Project.PathWithNamespace = "team/test-repo"
+	payload.Repository.Name = "test-repo"
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if len(body) >= size {
+		return body
+	}
+	// Grow it by widening one string field rather than appending junk, so the
+	// result stays parseable JSON and the test can tell a size rejection apart
+	// from a parse failure.
+	payload.Repository.Name = "test-repo" + strings.Repeat("x", size-len(body))
+	body, err = json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal padded: %v", err)
+	}
+	return body
+}
+
+// A body over the cap must be refused as too large, not silently truncated.
+//
+// 🔴 This is the regression test for 2026-09-15. The handler used io.LimitReader,
+// which stops at the cap and reports a clean EOF, so an oversize payload became
+// a *truncated* one that failed later as "unexpected end of JSON input" — an
+// error naming neither the size nor this limit. The push was lost, because
+// GitLab does not retry a webhook. A 400 here would pass a LimitReader
+// implementation just as happily, so assert on 413 specifically.
+func TestGitLabHandler_BodyOverCapRejected(t *testing.T) {
+	wh := NewWebhook(task.NewGroup(context.Background()), &mockMirrorer{}, "", "", nil,
+		WithMaxBodySizeMB(1))
+
+	body := padPayload(t, 2<<20)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/gitlab", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	wh.GitLabHandler(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413 — a 400 means the body was truncated and failed to parse, not rejected for size", w.Code)
+	}
+}
+
+// The cap is a ceiling, not a target: a payload under it goes through untouched.
+func TestGitLabHandler_LargeBodyUnderCapAccepted(t *testing.T) {
+	wh := NewWebhook(task.NewGroup(context.Background()), &mockMirrorer{}, "", "", nil,
+		WithMaxBodySizeMB(4))
+
+	// Bigger than the 1MB cap that dropped the real event, comfortably under 4MB.
+	body := padPayload(t, 2<<20)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/gitlab", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	wh.GitLabHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (body %d bytes, cap 4MB)", w.Code, len(body))
+	}
+}
+
+// The GitHub path reads its body through the same helper, so it inherits the cap.
+func TestGitHubHandler_BodyOverCapRejected(t *testing.T) {
+	wh := NewWebhook(task.NewGroup(context.Background()), &mockMirrorer{}, "", "", nil,
+		WithMaxBodySizeMB(1))
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/github", bytes.NewReader(padPayload(t, 2<<20)))
+	w := httptest.NewRecorder()
+
+	wh.GitHubHandler(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413", w.Code)
+	}
+}
+
+// A caller with no opinion gets the default, and a nonsense option is ignored
+// rather than producing a handler that rejects every event.
+func TestWithMaxBodySizeMB(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []WebhookOption
+		want int64
+	}{
+		{"unset uses the default", nil, config.DefaultWebhookMaxBodySizeMB << 20},
+		{"explicit value applies", []WebhookOption{WithMaxBodySizeMB(32)}, 32 << 20},
+		{"zero is ignored", []WebhookOption{WithMaxBodySizeMB(0)}, config.DefaultWebhookMaxBodySizeMB << 20},
+		{"negative is ignored", []WebhookOption{WithMaxBodySizeMB(-1)}, config.DefaultWebhookMaxBodySizeMB << 20},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			wh := NewWebhook(task.NewGroup(context.Background()), &mockMirrorer{}, "", "", nil, tc.opts...)
+			if wh.maxBodySize != tc.want {
+				t.Errorf("maxBodySize = %d, want %d", wh.maxBodySize, tc.want)
+			}
+		})
+	}
+}

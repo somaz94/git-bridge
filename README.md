@@ -54,11 +54,13 @@ Supports CodeCommit, GitLab, GitHub with any-to-any mirroring via SQS polling an
 - **Multi-repo**: Configure multiple repositories in a single instance
 - **Bidirectional**: `source-to-target` / `target-to-source` / `bidirectional`
 - **Delete propagation**: A branch/tag deletion on one side propagates to the other (CodeCommit ↔ GitLab/GitHub). Idempotent handling breaks the echo-delete loop.
+- **Ref restore**: Because a delete records the tip it removed, the console can put that ref back with one click. It refuses rather than overwrite if the ref returned in the meantime.
+- **Rewind guard**: Before pushing, each ref is compared against the destination's current tip. A push that would move the destination **backwards** — because it already contains what this side holds — is withheld rather than forced, and the write itself carries a `--force-with-lease` against the tip it was checked against. A deliberate rewind is applied on request (`force`, see [Retry API](docs/retry-api.md)).
 - **Loop detection**: Skips notification on no-op push (already up-to-date), preventing redundant alerts in bidirectional sync
 - **Multi-SQS consumer**: Support multiple SQS queues for multi-AWS region/account environments
 - **Dual event sources**: SQS polling (CodeCommit) + HTTP webhooks (GitLab/GitHub)
 - **DLQ support**: Failed SQS messages retry up to 5 times, then move to DLQ
-- **Notifications**: Slack webhook on success/failure with committer info (see [Slack App Setup](docs/slack-app-setup.md))
+- **Notifications**: Slack webhook on success/failure with commit author, branch, and tag info (see [Slack App Setup](docs/slack-app-setup.md))
 - **Incremental sync**: Reuses existing mirror via `git fetch` — full clone only on first run or fallback
 - **Persistent cache**: PVC-backed mirror directory survives pod restarts for fast recovery
 - **Cloud-native**: K8s Deployment with liveness/readiness probes
@@ -69,7 +71,7 @@ Supports CodeCommit, GitLab, GitHub with any-to-any mirroring via SQS polling an
 
 - **Language**: Go 1.26+
 - **AWS SDK**: aws-sdk-go-v2 (SQS consumer)
-- **Git**: Incremental `git fetch --prune` (with `git clone --mirror` fallback) / `git push --force`
+- **Git**: Incremental `git fetch --prune` (with `git clone --mirror` fallback) / `git push` with a per-ref `--force-with-lease`
 - **Config**: YAML with `${ENV_VAR}` expansion (credentials only; repos defined directly)
 - **CI/CD**: GitHub Actions (test, release, changelog)
 - **Runtime**: Kubernetes (Alpine-based Docker image)
@@ -113,7 +115,7 @@ git-bridge/
 
 Credentials are injected via environment variables (`${VAR}` syntax, expanded at startup). Repository definitions are written directly in the ConfigMap — no env vars needed for repos.
 
-> All env vars follow the `<TYPE>_<NAME>_<FIELD>` pattern. See [docs/naming-convention.md](docs/naming-convention.md) for the full naming convention guide.
+> Provider and consumer env vars follow the `<TYPE>_<NAME>_<FIELD>` pattern. The service-wide ones (`WEBHOOK_*_SECRET`, `RETRY_API_TOKEN`, `SLACK_WEBHOOK_URL`, `CONFIG_PATH`, `WORK_DIR`) and the per-repo override (`<REPO>_SLACK_WEBHOOK_URL`) sit outside it. See [docs/naming-convention.md](docs/naming-convention.md) for the full naming convention guide.
 >
 > Example files with detailed comments are available in the [examples/](examples/) directory. Use them as a starting point for your own configuration.
 
@@ -135,7 +137,9 @@ Credentials are injected via environment variables (`${VAR}` syntax, expanded at
 | `SQS_<NAME>_SECRET_KEY` | AWS secret key per consumer (e.g. `SQS_EU_SECRET_KEY`) | Yes** |
 | `WEBHOOK_GITLAB_SECRET` | X-Gitlab-Token verification (empty = skip) | No |
 | `WEBHOOK_GITHUB_SECRET` | GitHub webhook secret for HMAC-SHA256 (empty = skip) | No |
+| `RETRY_API_TOKEN` | Bearer token for `/retry/mirror`. Empty disables the endpoint entirely (404), and a scheduled reconcile calls it with this token too — so it is effectively required | Yes |
 | `SLACK_WEBHOOK_URL` | Slack incoming webhook URL (empty = disabled) | No |
+| `<REPO>_SLACK_WEBHOOK_URL` | Per-repo Slack channel override, referenced as `${...}` from `repos[].slack_webhook_url` (e.g. `DEMO_REPO_SLACK_WEBHOOK_URL`). Empty falls back to `SLACK_WEBHOOK_URL` | No |
 | `CONFIG_PATH` | Config file path (default: `/etc/git-bridge/config.yaml`) | No |
 | `WORK_DIR` | Temp directory for git operations (default: `/tmp/git-bridge`) | No |
 
@@ -211,7 +215,7 @@ repos:
 - For a matched ref, **events in the opposite direction (push and delete) are silently skipped** (the SQS message is still deleted, so no retries / DLQ).
 - A push is **scoped to the ref the event named**. When an event carries a ref (`meta.Ref != ""`), only that single ref is pushed — **whether or not** the repo declares `ref_overrides`. If that ref does not exist locally the push is skipped as `no-refs-to-push` rather than failing (this guards a retry for a branch that was deleted, and a fetch↔push prune race).
 - An event with no ref (a full sync, or the hourly reconcile cron) pushes everything (`--all`) for a repo **without** `ref_overrides`, and every local ref minus the ones excluded for this direction for a repo **with** them.
-- If ref enumeration (`ListRefs`) fails it is fail-open — the mirror does not stop; it falls back to the full `--all` push.
+- If ref enumeration (`ListRefs`) fails the sync ends as an error — it does not fall back to pushing everything. `--all` cannot carry a per-ref lease, so the rewind guard would drop out entirely; a skipped sync is recovered by the next event or the hourly reconcile.
 
 > **Why this is not gated on `ref_overrides`**: gating it that way destroyed a commit on 2026-08-10. A `demo-repo` event for `version/4.2.0` pushed every ref because the repo declares no overrides, and it force-wrote `master-b` from a source that had not yet seen a commit pushed there 49 seconds earlier. An event names the ref it is about; pushing anything else is the mirror acting on state it was not told about. Refs that never get their own event are still reconciled by the hourly cron, which sends no ref and therefore still pushes everything.
 
