@@ -15,10 +15,10 @@ import (
 // The two tips from the 2026-08-11 demo-repo loss, kept verbatim so the tests
 // below read as the incident rather than as an abstraction of it.
 //
-//	15:05:25  sunddu pushes a045472 to GitLab
+//	15:05:25  bob pushes a045472 to GitLab
 //	15:05:34  gl→cc carries it to CodeCommit
 //	15:05:41  CodeCommit echoes it back; the fetch that answers takes 55s
-//	15:06:29  sunddu pushes 95a8c37 on top — GitLab is now ahead
+//	15:06:29  bob pushes 95a8c37 on top — GitLab is now ahead
 //	15:06:36  the echo writes its 55-second-old snapshot with --force
 //	15:06:37  refs/heads/version/4.3.0: 95a8c37 → a045472, one commit gone
 const (

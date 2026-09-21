@@ -78,11 +78,18 @@ type mockGitRunner struct {
 	// Push-guard inputs. localTips/remoteTips are the two sides planPush
 	// compares; nil localTips derives one tip per ref from mockRefList, and nil
 	// remoteTips means the destination has nothing yet.
-	localTips        map[string]string
-	localTipsErr     error
-	remoteTips       map[string]string
-	remoteTipsErr    error
-	ancestors        map[string]bool // "<ancestor>><descendant>" → true
+	localTips     map[string]string
+	localTipsErr  error
+	remoteTips    map[string]string
+	remoteTipsErr error
+	ancestors     map[string]bool // "<ancestor>><descendant>" → true
+
+	// unmatched is what UnmatchedCommits reports per "<kept>...<discarded>".
+	// A pair a test did not configure fails the check, which classifies the
+	// overwrite as a possible loss — the behaviour every forced-update test
+	// written before the check existed still asserts.
+	unmatched        map[string]mockUnmatched
+	unmatchedCalls   []string
 	listRefTipsCalls int
 	remoteRefsCalls  []string
 	isAncestorCalls  []string
@@ -95,6 +102,14 @@ type mockGitRunner struct {
 	pushCtxDeadline      time.Time
 	pushCtxHasDeadline   bool
 	refTipCtxHasDeadline bool
+
+	// Deadlines recorded per remote call, so a test can tell the whole-operation
+	// budget apart from the tighter one the metadata queries get.
+	refTipCtxDeadline        time.Time
+	remoteRefsCtxDeadline    time.Time
+	remoteRefsCtxHasDeadline bool
+	deleteRefCtxDeadline     time.Time
+	deleteRefCtxHasDeadline  bool
 }
 
 type refTipCall struct {
@@ -205,12 +220,32 @@ func (m *mockGitRunner) ListRefTips(_ context.Context, _ string) (map[string]str
 // every ref reads as new and the push goes through. That keeps the guard out of
 // the way of tests about something else, and forces a test that cares about the
 // guard to state the destination it wants.
-func (m *mockGitRunner) RemoteRefs(_ context.Context, rem provider.Remote) (map[string]string, error) {
+func (m *mockGitRunner) RemoteRefs(ctx context.Context, rem provider.Remote) (map[string]string, error) {
+	if dl, ok := ctx.Deadline(); ok {
+		m.remoteRefsCtxHasDeadline, m.remoteRefsCtxDeadline = true, dl
+	}
 	m.remoteRefsCalls = append(m.remoteRefsCalls, rem.URL)
 	if m.remoteTipsErr != nil {
 		return nil, m.remoteTipsErr
 	}
 	return m.remoteTips, nil
+}
+
+// mockUnmatched is one configured UnmatchedCommits answer.
+type mockUnmatched struct {
+	lost  []history.LostCommit
+	total int
+	err   error
+}
+
+func (m *mockGitRunner) UnmatchedCommits(_ context.Context, _, kept, discarded string) ([]history.LostCommit, int, error) {
+	key := kept + "..." + discarded
+	m.unmatchedCalls = append(m.unmatchedCalls, key)
+	r, ok := m.unmatched[key]
+	if !ok {
+		return nil, 0, errors.New("mock: UnmatchedCommits not configured for " + key)
+	}
+	return r.lost, r.total, r.err
 }
 
 func (m *mockGitRunner) IsAncestor(_ context.Context, _, ancestor, descendant string) bool {
@@ -243,14 +278,17 @@ func (m *mockGitRunner) ListRefs(_ context.Context, _ string) ([]string, error) 
 	return m.listRefs, m.listRefsErr
 }
 
-func (m *mockGitRunner) DeleteRef(_ context.Context, _ string, rem provider.Remote, refType, refName string) error {
+func (m *mockGitRunner) DeleteRef(ctx context.Context, _ string, rem provider.Remote, refType, refName string) error {
+	if dl, ok := ctx.Deadline(); ok {
+		m.deleteRefCtxHasDeadline, m.deleteRefCtxDeadline = true, dl
+	}
 	m.deleteRefCalls = append(m.deleteRefCalls, deleteRefCall{URL: rem.URL, RefType: refType, RefName: refName})
 	return m.deleteRefErr
 }
 
 func (m *mockGitRunner) RefTip(ctx context.Context, rem provider.Remote, refType, refName string) (string, error) {
-	if _, ok := ctx.Deadline(); ok {
-		m.refTipCtxHasDeadline = true
+	if dl, ok := ctx.Deadline(); ok {
+		m.refTipCtxHasDeadline, m.refTipCtxDeadline = true, dl
 	}
 	m.refTipCalls = append(m.refTipCalls, refTipCall{URL: rem.URL, RefType: refType, RefName: refName})
 	if m.refTipErr != nil {
@@ -1374,7 +1412,7 @@ func TestParsePushForced(t *testing.T) {
 				t.Fatalf("parsePush(%q).Forced = %+v, want %+v", tt.output, got, tt.want)
 			}
 			for i := range got {
-				if got[i] != tt.want[i] {
+				if !reflect.DeepEqual(got[i], tt.want[i]) {
 					t.Errorf("forced[%d] = %+v, want %+v", i, got[i], tt.want[i])
 				}
 			}
@@ -2979,18 +3017,97 @@ func TestRunPush_NonTimeoutErrorNotAnnotated(t *testing.T) {
 
 // TestDoDeleteRef_AppliesTimeoutAfterLock is the mirror image of the doMirror case: it
 // verifies that doDeleteRef also applies the git-op timeout after acquiring the mutex. The
-// parent ctx (Background) has no deadline, so the deadline RefTip receives can only come
+// parent ctx (Background) has no deadline, so the deadline DeleteRef receives can only come
 // from withGitTimeout.
+//
+// It asserts on DeleteRef rather than RefTip because RefTip now runs under the much tighter
+// remoteMetaTimeout, and would therefore carry a deadline even if withGitTimeout were
+// dropped altogether — it can no longer witness this. DeleteRef still takes the post-lock
+// ctx unchanged, so it is the one that can.
 func TestDoDeleteRef_AppliesTimeoutAfterLock(t *testing.T) {
 	git := &mockGitRunner{}
 	svc := newTestService(defaultRepos(), makeProviders(), &mockNotifier{}, git)
+	svc.timeoutSeconds = 600
 
 	err := svc.SyncDelete(context.Background(), "my-repo", "branch", "feature-branch")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if !git.deleteRefCtxHasDeadline {
+		t.Fatal("DeleteRef ctx should carry a deadline derived from timeoutSeconds (applied after lock)")
+	}
+	if remaining := time.Until(git.deleteRefCtxDeadline); remaining <= remoteMetaTimeout {
+		t.Errorf("DeleteRef should hold the full ~600s budget, not the metadata one, got remaining=%v", remaining)
+	}
+}
+
+// --- remote metadata query bound ---
+
+// TestPlanPush_DestinationQueryBoundedBelowGitBudget pins down why remoteMetaTimeout exists.
+//
+// An ls-remote used to inherit the whole-operation budget, which is sized for a full clone
+// plus a repack. Nothing in this process bounded it, so a destination that accepted the
+// connection and then never answered stalled for as long as libcurl's own default allowed —
+// five minutes on 2026-09-19 — holding the per-repo lock throughout and queueing every event
+// for that repo behind it.
+func TestPlanPush_DestinationQueryBoundedBelowGitBudget(t *testing.T) {
+	git := &mockGitRunner{pushChanged: true}
+	svc := newTestService(nil, makeProviders(), &mockNotifier{}, git)
+	svc.timeoutSeconds = 1200
+
+	repoCfg := config.RepoConfig{Name: "t"}
+	err := svc.doMirror(context.Background(), repoCfg, "codecommit-eu", "my-repo", "gitlab-main", "team/my-repo", EventMeta{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !git.remoteRefsCtxHasDeadline {
+		t.Fatal("RemoteRefs ctx should carry a deadline of its own")
+	}
+	remaining := time.Until(git.remoteRefsCtxDeadline)
+	if remaining <= 0 || remaining > remoteMetaTimeout {
+		t.Errorf("expected the metadata bound (≤%v), got remaining=%v", remoteMetaTimeout, remaining)
+	}
+	// The push, by contrast, keeps the full budget — the tighter bound must apply to the
+	// metadata query alone and not shorten the transfer that follows it.
+	if pushRemaining := time.Until(git.pushCtxDeadline); pushRemaining <= remoteMetaTimeout {
+		t.Errorf("push should keep the ~1200s budget, got remaining=%v", pushRemaining)
+	}
+}
+
+// TestPlanPush_DestinationQueryNeverExtendsASmallerBudget is the other half: the metadata
+// bound is a ceiling, not a floor. An operator who configures a timeout_seconds below it
+// means it, and deriving from the parent ctx is what keeps that true.
+func TestPlanPush_DestinationQueryNeverExtendsASmallerBudget(t *testing.T) {
+	git := &mockGitRunner{pushChanged: true}
+	svc := newTestService(nil, makeProviders(), &mockNotifier{}, git)
+	svc.timeoutSeconds = 5
+
+	repoCfg := config.RepoConfig{Name: "t"}
+	if err := svc.doMirror(context.Background(), repoCfg, "codecommit-eu", "my-repo", "gitlab-main", "team/my-repo", EventMeta{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if remaining := time.Until(git.remoteRefsCtxDeadline); remaining > 5*time.Second {
+		t.Errorf("the 5s budget must win over remoteMetaTimeout, got remaining=%v", remaining)
+	}
+}
+
+// TestDoDeleteRef_RefTipQueryBoundedBelowGitBudget covers the same bound on the other remote
+// metadata call. doDeleteRef reads the tip before deleting, so a hung read here stalls a
+// delete exactly as it stalled a push.
+func TestDoDeleteRef_RefTipQueryBoundedBelowGitBudget(t *testing.T) {
+	git := &mockGitRunner{}
+	svc := newTestService(defaultRepos(), makeProviders(), &mockNotifier{}, git)
+	svc.timeoutSeconds = 1200
+
+	if err := svc.SyncDelete(context.Background(), "my-repo", "branch", "feature-branch"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !git.refTipCtxHasDeadline {
-		t.Error("RefTip ctx should carry a deadline derived from timeoutSeconds (applied after lock)")
+		t.Fatal("RefTip ctx should carry a deadline of its own")
+	}
+	remaining := time.Until(git.refTipCtxDeadline)
+	if remaining <= 0 || remaining > remoteMetaTimeout {
+		t.Errorf("expected the metadata bound (≤%v), got remaining=%v", remoteMetaTimeout, remaining)
 	}
 }
 
@@ -3840,5 +3957,12 @@ func TestDefaultGitRunner_CredentialFlagsDoNotBreakTheCommandLine(t *testing.T) 
 	}
 	if got := gitOut(t, tgtDir, "rev-parse", "refs/heads/main"); got == "" {
 		t.Error("main did not arrive at the destination")
+	}
+}
+
+// TestRemoteMetaTimeout_BelowLibcurlDefault keeps the bound below the 300s it exists to undercut.
+func TestRemoteMetaTimeout_BelowLibcurlDefault(t *testing.T) {
+	if remoteMetaTimeout >= 300*time.Second {
+		t.Errorf("remoteMetaTimeout=%v must stay below libcurl's 300s connect default", remoteMetaTimeout)
 	}
 }

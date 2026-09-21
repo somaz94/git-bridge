@@ -105,6 +105,17 @@ const (
 // then both sides agree on the rewound state.
 const ReasonForcedUpdate = "forced-update"
 
+// ReasonRewritten narrows ResultOK the same way ReasonForcedUpdate does, for the
+// case where every overwritten ref was checked and found to have lost nothing:
+// each commit that only the old tip reached has a byte-identical patch in the new
+// history. That is what a rebase, an amend of a message, or a rebase onto a
+// newer base looks like.
+//
+// It exists so the ordinary rewrite stops reading as data loss. An alert that
+// fires on every rebase is one people learn to dismiss, and then the push that
+// really did discard someone's commit is dismissed with it.
+const ReasonRewritten = "rewritten"
+
 // ForcedRef is one ref a push overwrote non-fast-forward.
 //
 // Old is the point of the whole record. It is the tip that was discarded, and
@@ -116,6 +127,41 @@ type ForcedRef struct {
 	Ref string `json:"ref"`
 	Old string `json:"old"`
 	New string `json:"new"`
+	// Preserved is true only when the overwrite was checked and every commit
+	// reachable from Old but not New has a byte-identical patch in New's history
+	// (`git patch-id --verbatim`). Only content is compared: a discarded commit's
+	// message, author and date are not, so an amended message still counts.
+	//
+	// The zero value is deliberately the alarming one. A ref that was never
+	// checked (a tag, or an event recorded before the check existed) and a ref
+	// whose check failed both read as "may have lost commits", because the
+	// cost of calling a real loss harmless is a silent one, and the cost of
+	// the opposite mistake is one alert too many.
+	Preserved bool `json:"preserved,omitempty"`
+	// Lost lists the commits the check found no equivalent for, newest first,
+	// capped at MaxLostCommits. LostTotal is the uncapped count.
+	//
+	// A check that failed leaves both empty while Preserved stays false, so
+	// "nothing listed" never means "nothing lost" — only Preserved says that.
+	Lost      []LostCommit `json:"lost,omitempty"`
+	LostTotal int          `json:"lost_total,omitempty"`
+}
+
+// MaxLostCommits caps how many discarded commits are carried per ref. A reset
+// that throws away a long branch would otherwise put hundreds of lines into
+// the history file and the Slack message; the count still says how many there
+// were, and the old tip still reaches all of them.
+const MaxLostCommits = 10
+
+// LostCommit names one commit an overwrite discarded without an equivalent.
+//
+// Author and subject are carried with the SHA because the person reading the
+// alert is deciding whose work vanished and whether it matters, and a bare SHA
+// answers neither without a clone of the repository.
+type LostCommit struct {
+	SHA     string `json:"sha"`
+	Author  string `json:"author"`
+	Subject string `json:"subject"`
 }
 
 // HeldRef is one ref the push guard refused to move, and the destination tip
@@ -199,7 +245,8 @@ type Event struct {
 	Ref    string    `json:"ref,omitempty"`
 	Result string    `json:"result"` // ok | skip | fail
 	// Reason narrows Result. Always set for skip and fail; on ok it is empty
-	// unless the push overwrote something (ReasonForcedUpdate).
+	// unless the push overwrote something (ReasonForcedUpdate, or
+	// ReasonRewritten when the overwrite was shown to have lost nothing).
 	Reason     string `json:"reason,omitempty"`
 	DurationMS int64  `json:"duration_ms"`
 	Err        string `json:"err,omitempty"`
@@ -243,6 +290,21 @@ type Event struct {
 // IsForced reports whether this event overwrote history.
 func (e Event) IsForced() bool { return len(e.Forced) > 0 }
 
+// ForcedReason picks the reason an event carrying forced refs is recorded
+// with: ReasonRewritten when every one of them was shown to have lost nothing,
+// ReasonForcedUpdate otherwise. It returns "" for an event with none.
+func ForcedReason(forced []ForcedRef) string {
+	if len(forced) == 0 {
+		return ""
+	}
+	for _, f := range forced {
+		if !f.Preserved {
+			return ReasonForcedUpdate
+		}
+	}
+	return ReasonRewritten
+}
+
 // With returns a copy of the event stamped with an outcome, so a caller can
 // build the descriptive half once and finish it differently on each exit path.
 // err may be nil.
@@ -279,7 +341,9 @@ type Query struct {
 	// 100 events and render four. The trigger name is passed in rather than
 	// hardcoded so this package still does not import mirror (see defaultSource).
 	RoutineSource string
-	// ForcedOnly keeps only events that overwrote a ref non-fast-forward.
+	// ForcedOnly keeps only events that overwrote a ref non-fast-forward —
+	// both kinds, forced-update and rewritten. A rewrite that lost nothing is
+	// still a rewrite, and hiding it here would leave no way to list them.
 	//
 	// It is separate from FailuresOnly rather than folded into it because the
 	// two answer different questions — "what broke" versus "what did we

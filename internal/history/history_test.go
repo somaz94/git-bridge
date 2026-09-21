@@ -971,3 +971,101 @@ func TestForcedRefsSurviveAReload(t *testing.T) {
 		t.Errorf("restored Forced = %+v, want the original tips", got[0].Forced)
 	}
 }
+
+// The classification must survive a restart too, or a rewrite recorded as
+// harmless reloads as a loss and the console turns red after every deploy.
+func TestForcedClassificationSurvivesAReload(t *testing.T) {
+	dir := t.TempDir()
+	w, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lost := []LostCommit{{SHA: "ccc333", Author: "alice", Subject: "first discarded"}}
+	w.Record(Event{
+		Repo: "a", Result: ResultOK, Reason: ReasonForcedUpdate,
+		Forced: []ForcedRef{
+			{Ref: "refs/heads/main", Old: "aaa111", New: "bbb222", Lost: lost, LostTotal: 3},
+			{Ref: "refs/heads/dev", Old: "ddd444", New: "eee555", Preserved: true},
+		},
+	})
+	_ = w.Close()
+
+	second, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Close() }()
+
+	got := second.Recent(Query{Limit: 10})
+	if len(got) != 1 || len(got[0].Forced) != 2 {
+		t.Fatalf("restored %+v, want one event with two forced refs", got)
+	}
+	main, dev := got[0].Forced[0], got[0].Forced[1]
+	if main.Preserved || main.LostTotal != 3 || len(main.Lost) != 1 || main.Lost[0] != lost[0] {
+		t.Errorf("restored lossy ref = %+v, want its lost commits and count", main)
+	}
+	if !dev.Preserved {
+		t.Errorf("restored preserved ref = %+v, want Preserved", dev)
+	}
+}
+
+// An event recorded before the check existed has no classification. It must
+// reload as what it was reported as at the time — a possible loss — and not be
+// quietly upgraded to harmless by the zero value.
+func TestForcedRefRecordedBeforeTheCheckReadsAsUnpreserved(t *testing.T) {
+	const legacy = `{"ref":"refs/heads/main","old":"aaa111","new":"bbb222"}`
+	var f ForcedRef
+	if err := json.Unmarshal([]byte(legacy), &f); err != nil {
+		t.Fatal(err)
+	}
+	if f.Preserved {
+		t.Error("a legacy forced ref must not read as preserved")
+	}
+	if got := ForcedReason([]ForcedRef{f}); got != ReasonForcedUpdate {
+		t.Errorf("ForcedReason(legacy) = %q, want %q", got, ReasonForcedUpdate)
+	}
+}
+
+// One unpreserved ref makes the whole event a forced update; only an event whose
+// every ref was preserved is a rewrite.
+func TestForcedReason(t *testing.T) {
+	kept := ForcedRef{Ref: "refs/heads/a", Preserved: true}
+	lossy := ForcedRef{Ref: "refs/heads/b"}
+	tests := []struct {
+		name   string
+		forced []ForcedRef
+		want   string
+	}{
+		{"none", nil, ""},
+		{"all preserved", []ForcedRef{kept, kept}, ReasonRewritten},
+		{"one lossy", []ForcedRef{kept, lossy}, ReasonForcedUpdate},
+		{"only lossy", []ForcedRef{lossy}, ReasonForcedUpdate},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ForcedReason(tt.forced); got != tt.want {
+				t.Errorf("ForcedReason() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// ForcedOnly lists every overwrite, including the harmless ones. Hiding
+// rewrites there would leave no way to list them at all.
+func TestRecentForcedOnlyIncludesRewrites(t *testing.T) {
+	w, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Close() }()
+
+	w.Record(Event{Repo: "a", Result: ResultOK})
+	w.Record(Event{
+		Repo: "b", Result: ResultOK, Reason: ReasonRewritten,
+		Forced: []ForcedRef{{Ref: "refs/heads/main", Old: "aaa", New: "bbb", Preserved: true}},
+	})
+
+	if got := w.Recent(Query{Limit: 10, ForcedOnly: true}); len(got) != 1 || got[0].Repo != "b" {
+		t.Errorf("ForcedOnly = %+v, want the rewrite", got)
+	}
+}

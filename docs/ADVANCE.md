@@ -433,7 +433,7 @@ mirror:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `timeout_seconds` | `300` | Budget for **one whole sync** (clone/fetch **plus** push share this single deadline — it is not applied per git command). On expiry the git child is SIGKILLed (`signal: killed`) and the sync is reported as failed. Raise it for large repos whose full clone approaches the limit. It is also the floor for `visibility_timeout_seconds` |
+| `timeout_seconds` | `300` | Budget for **one whole sync** (clone/fetch **plus** push share this single deadline — it is not applied per git command). A remote metadata query (`ls-remote`, used to read the destination tips before a push and before a ref delete) is the one exception: it is bounded separately and far more tightly, so a destination that accepts the connection and then stops answering cannot spend this whole budget — and hold the repo's lock — on a single query that is never going to return. On expiry the git child is SIGKILLed (`signal: killed`) and the sync is reported as failed. Raise it for large repos whose full clone approaches the limit. It is also the floor for `visibility_timeout_seconds` |
 | `drain_timeout_seconds` | `120` | On SIGTERM the service stops accepting new work, then waits at most this long for syncs already in flight before killing them. It is a cap, not a delay — shutdown returns as soon as the work does. Keep the pod's `terminationGracePeriodSeconds` **above** it, or the kubelet SIGKILLs mid-drain and the wait buys nothing. A sync killed mid-fetch can leave a pack `.keep` marker behind, which excludes that packfile from every later repack until housekeeping prunes it |
 
 <br/>

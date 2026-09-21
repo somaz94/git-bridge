@@ -60,6 +60,12 @@
     .forcedwarn { color: var(--danger); font-size: 12.5px; margin-top: 3px; font-weight: 600; }
     tr.forced > td { box-shadow: inset 3px 0 0 var(--danger); }
     .kv dd.forced { color: var(--danger); white-space: pre-wrap; }
+    /* A rewrite that was checked and lost nothing (a rebase, an amend). Still
+       worth seeing, never worth alarm — painting it danger is what taught people
+       to skim past the red rows that really did lose commits. */
+    .rewrotewarn { color: var(--warn); font-size: 12.5px; margin-top: 3px; }
+    tr.rewritten > td { box-shadow: inset 3px 0 0 var(--warn); }
+    .kv dd.rewritten { color: var(--warn); white-space: pre-wrap; }
     .caret { display: inline-block; width: 10px; color: var(--muted); font-size: 11px; }
     tr.detail > td { background: var(--bg); }
     .kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; font-size: 12.5px; }
@@ -110,7 +116,7 @@
           </select>
         </label>
         <label><input type="checkbox" id="failuresOnly" /> Failures only</label>
-        <label title="Shows only syncs that overwrote a ref non-fast-forward — the destination lost commits. These are recorded as successes, so the Failures filter never surfaces them."><input type="checkbox" id="forcedOnly" /> Forced updates only</label>
+        <label title="Shows only syncs that overwrote a ref non-fast-forward: red where commits may have been lost, amber where every discarded change was checked and is still present byte for byte. These are recorded as successes, so the Failures filter never surfaces them."><input type="checkbox" id="forcedOnly" /> Forced updates only</label>
         <label title="Hides only the scheduled reconciles that found nothing to do. A reconcile that actually mirrored something, or failed, is always shown."><input type="checkbox" id="hideRoutine" checked /> Hide idle reconciles</label>
         <label><input type="checkbox" id="collapse" checked /> Collapse echoes</label>
         <label><input type="checkbox" id="auto" checked /> Auto-refresh</label>
@@ -316,6 +322,12 @@
     }
 
     function forcedRefs(ev) { return Array.isArray(ev.forced) ? ev.forced : []; }
+    // Only a ref the server checked and found intact is preserved. Anything
+    // else — a loss, a failed check, a tag, a row recorded before the check
+    // existed — stays in the red half, because calling a real loss harmless is
+    // the mistake that cannot be noticed afterwards.
+    function lossyRefs(ev) { return forcedRefs(ev).filter((f) => !f.preserved); }
+    function preservedRefs(ev) { return forcedRefs(ev).filter((f) => f.preserved); }
 
     // Finds the delete that actually removed something inside a group.
     //
@@ -367,6 +379,23 @@
         || g.head || ev;
     }
 
+    // What one overwritten ref lost, as detail lines. An empty list is only
+    // "nothing lost" when the ref is preserved, which never reaches here — so an
+    // unpreserved ref with no list says the check did not run instead of saying
+    // nothing, which would read as the all-clear.
+    function lostLines(f) {
+      const lost = Array.isArray(f.lost) ? f.lost : [];
+      if (!lost.length) {
+        return String(f.ref || "").startsWith("refs/tags/")
+          ? "\n  (tags are not checked)"
+          : "\n  (which commits were discarded is unknown — compare the two tips)";
+      }
+      const more = (f.lost_total || lost.length) - lost.length;
+      return lost.map((c) => "\n  lost " + esc(String(c.sha || "").slice(0, 10)) + " "
+          + esc(c.author) + ": " + esc(c.subject)).join("")
+        + (more > 0 ? "\n  … and " + more + " more" : "");
+    }
+
     function renderDetail(ev, id, g) {
       const rows = [
         ["Time", fmtFullTime(ev.ts)],
@@ -385,12 +414,27 @@
       // The old SHA is the whole point of this block: the destination no longer
       // names that commit anywhere, so this is the only place left to read it
       // from, and git keeps the objects only until it garbage-collects.
-      const forced = forcedRefs(ev);
-      const forcedRow = forced.length
+      //
+      // One recovery command per ref, each with its own old tip: a push that
+      // overwrote two branches discarded two tips, and printing only the first
+      // left the second unrecoverable from this view.
+      const lossy = lossyRefs(ev);
+      const forcedRow = lossy.length
         ? "<dt>Overwritten</dt><dd class=\"forced\">"
-          + forced.map((f) => esc(f.ref) + "\n  was " + esc(f.old) + "\n  now " + esc(f.new)).join("\n")
-          + "\n\nRecover the old tip from " + esc(ev.to) + " with:\n"
-          + "  git fetch " + esc("<clone-url>") + " " + esc(forced[0].old)
+          + lossy.map((f) => esc(f.ref) + "\n  was " + esc(f.old) + "\n  now " + esc(f.new)
+            + lostLines(f)).join("\n\n")
+          + "\n\nRecover an old tip from " + esc(ev.to) + " with:\n"
+          + lossy.map((f) => "  git fetch " + esc("<clone-url>") + " " + esc(f.old)).join("\n")
+          + "</dd>"
+        : "";
+      // Nothing to recover here, so no command — only the record that it
+      // happened and why it was judged harmless.
+      const kept = preservedRefs(ev);
+      const rewrittenRow = kept.length
+        ? "<dt>Rewritten</dt><dd class=\"rewritten\">"
+          + kept.map((f) => esc(f.ref) + "\n  was " + esc(f.old) + "\n  now " + esc(f.new)).join("\n")
+          + "\n\nEvery change only the old tip reached is present byte for byte in the"
+          + "\nnew history (a rebase or an amend). Commit messages are not compared."
           + "</dd>"
         : "";
       // Same reasoning as the block above, for the operation that discards a
@@ -466,7 +510,7 @@
         + (rt.to ? "Re-run sync → " + esc(rt.to) : "Re-run sync for this repo")
         + '</button>'
         + '<span class="retrymsg" id="retrymsg-' + id + '"></span></div>';
-      return '<tr class="detail"><td></td><td colspan="8"><dl class="kv">' + rows + actorRow + forcedRow
+      return '<tr class="detail"><td></td><td colspan="8"><dl class="kv">' + rows + actorRow + forcedRow + rewrittenRow
         + deletedRow + heldRow + restoredRow + err + "</dl>" + restore + force + retry + "</td></tr>";
     }
 
@@ -484,19 +528,25 @@
         : "";
       // Collapsing echoes must not hide this: a group speaks for one member,
       // and the forced one may be any of the others.
-      const forcedCount = g.members.reduce((n, m) => n + forcedRefs(m).length, 0);
+      const forcedCount = g.members.reduce((n, m) => n + lossyRefs(m).length, 0);
+      const rewrittenCount = g.members.reduce((n, m) => n + preservedRefs(m).length, 0);
       const forced = forcedCount
         ? '<div class="forcedwarn">' + forcedCount + " ref" + (forcedCount === 1 ? "" : "s")
           + " overwritten — history discarded at the destination</div>"
         : "";
-      return '<tr class="row' + (isLoop(g) ? " loop" : "") + (forcedCount ? " forced" : "") + '" data-id="' + id + '">'
+      const rewritten = rewrittenCount
+        ? '<div class="rewrotewarn">' + rewrittenCount + " ref" + (rewrittenCount === 1 ? "" : "s")
+          + " rewritten — content preserved</div>"
+        : "";
+      const rowClass = forcedCount ? " forced" : (rewrittenCount ? " rewritten" : "");
+      return '<tr class="row' + (isLoop(g) ? " loop" : "") + rowClass + '" data-id="' + id + '">'
         + '<td class="caret" id="caret-' + id + '">&#9656;</td>'
         + '<td class="time" title="' + esc(fmtFullTime(ev.ts)) + '">' + esc(fmtTime(ev.ts)) + "</td>"
         + "<td>" + esc(ev.repo) + extra + "</td>"
         + "<td>" + esc(ev.action) + "</td>"
         + '<td class="mono route">' + esc(ev.from) + " &rarr; " + esc(ev.to) + "</td>"
         + '<td class="mono">' + fmtRef(ev.ref) + "</td>"
-        + '<td><span class="badge ' + cls + '">' + esc(result) + "</span>" + reason + forced + loop + "</td>"
+        + '<td><span class="badge ' + cls + '">' + esc(result) + "</span>" + reason + forced + rewritten + loop + "</td>"
         + '<td class="reason">' + esc(ev.source) + "</td>"
         + '<td class="num">' + esc(fmtDuration(ev.duration_ms)) + "</td>"
         + "</tr>"
@@ -558,11 +608,13 @@
         // Counted over events, not groups: "was anything overwritten in this
         // window" has to be answerable from the status line alone, without
         // expanding a row or trusting that the group head is the forced one.
-        const forcedTotal = events.reduce((n, ev) => n + forcedRefs(ev).length, 0);
+        const forcedTotal = events.reduce((n, ev) => n + lossyRefs(ev).length, 0);
+        const rewrittenTotal = events.reduce((n, ev) => n + preservedRefs(ev).length, 0);
         setMsg(events.length + (events.length === 1 ? " event" : " events")
           + (groups.length !== events.length ? " in " + groups.length + " groups" : "")
           + (loops ? " · " + loops + " possible loop" + (loops === 1 ? "" : "s") : "")
           + (forcedTotal ? " · " + forcedTotal + " ref" + (forcedTotal === 1 ? "" : "s") + " overwritten" : "")
+          + (rewrittenTotal ? " · " + rewrittenTotal + " rewritten" : "")
           + " · updated " + new Date().toLocaleTimeString(), (loops || forcedTotal) ? "err" : "");
       } catch (e) {
         setMsg("Failed to load history: " + e.message, "err");

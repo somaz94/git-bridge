@@ -112,13 +112,20 @@ Git-Bridge sends notifications in the following cases:
 | Ref restore success | `Ref Restored` | `success` (✅) | A console click put back a ref a delete removed, at the tip that delete recorded. The body carries `Restored tip: <sha>` and `Restored by: <actor>`. The actor is on it because this writes to a real repository — unlike a webhook or SQS event, which has a pusher rather than an operator, someone chose to do this and the channel is where that becomes visible |
 | Ref restore failure | `Ref Restore Failed` | `error` (❌) | The restore was refused or failed. The body carries `Requested by: <actor>` and `Error: <what>`. All three exits send the same shape — the ref already exists on the destination, git has garbage-collected the commit, or the push failed — so a refusal is as legible in the channel as a success. A refusal is the expected outcome when someone re-created the branch in the meantime, not an incident |
 | Push withheld | `Push Withheld` | `warning` (⚠️) | The push guard withheld at least one **branch** because the destination already holds what this side would have pushed, so writing would have discarded commits there. Nothing was written. The body carries `Route:`, `Target:` and a `Withheld refs:` list (`<ref>: destination is at <sha> (<reason>)`), followed by one ready-to-run `curl … /retry/mirror` force command per held branch — the counterpart of the console's per-ref force button. A late echo settles on its own; a rewind someone meant to make does not, which is what this alert is for. Source: `reportHeld()` in [internal/mirror/mirror.go](../internal/mirror/mirror.go) |
-| Forced overwrite | `Forced Update` | `error` (❌) | The push succeeded, but at least one **branch** was overwritten non-fast-forward, so commits reachable only from the old tip are gone from the destination. The body lists each overwritten ref as `<ref>: <old> → <new>` plus a `git fetch <clone-url> <old>` recovery line per branch. It **replaces** the success notification for that push, rather than arriving alongside it — the two together would read as a contradiction — which is why it carries route, duration and target itself |
+| Forced overwrite | `Forced Update` | `error` (❌) | The push succeeded, but at least one **branch** was overwritten non-fast-forward and may have lost commits. The body lists each such ref as `<ref>: <old> → <new>`, followed by `lost <sha> <author>: <subject>` for each commit whose change is not present byte for byte in the new history (capped, with `… and N more`), plus a `git fetch <clone-url> <old>` recovery line per branch. A branch rewritten in the same push without losing anything is named under `Also rewritten in this push`. It **replaces** the success notification for that push, rather than arriving alongside it — the two together would read as a contradiction — which is why it carries route, duration and target itself |
 
 > No notification is sent when the push is already up-to-date (loop detection).
 >
 > A forced update that only moved **tags** is recorded in the history but sent no
 > alert: a pipeline that reuses build tag names re-points them constantly, and an
 > alert that fires on routine traffic is one people learn to ignore.
+>
+> The same reasoning covers a branch that was **rewritten without losing anything**
+> — a rebase or an amend, where every discarded commit's change is present byte
+> for byte in the new history (`git patch-id --verbatim`). No alert is sent; the ordinary `Mirror Sync` message carries a
+> `Rewritten: <ref> (content preserved)` line instead. The check errs toward the
+> alert: a merge commit, a rebase that resolved a conflict, a whitespace-only
+> difference, or a check that fails to run all still raise `Forced Update`.
 >
 > `warning` (⚠️) is emitted by `Push Withheld`, and the forced-overwrite alert is
 > `error` — so neither is filtered out of a channel watching only failures. Note that

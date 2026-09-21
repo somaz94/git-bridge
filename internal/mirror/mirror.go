@@ -144,6 +144,12 @@ type GitRunner interface {
 	// descendant. It is only meaningful when both SHAs are present locally
 	// (false when they are not).
 	IsAncestor(ctx context.Context, dir, ancestor, descendant string) bool
+	// UnmatchedCommits lists, inside dir, the commits reachable from discarded
+	// but not from kept whose patch has no byte-identical match on kept's side —
+	// what an overwrite of discarded by kept actually lost. It returns at most
+	// history.MaxLostCommits of them, newest first, plus the uncapped count.
+	// Both SHAs must be present locally; an error means nothing was judged.
+	UnmatchedCommits(ctx context.Context, dir, kept, discarded string) ([]history.LostCommit, int, error)
 	DeleteRef(ctx context.Context, workDir string, rem provider.Remote, refType, refName string) error
 	// RefTip reads the tip SHA of the remote rem's ref (refType/refName) with
 	// ls-remote. It returns "" when the ref does not exist (not an error).
@@ -538,6 +544,192 @@ func parseRefTips(output, sep string) map[string]string {
 func (d *defaultGitRunner) IsAncestor(ctx context.Context, dir, ancestor, descendant string) bool {
 	cmd := newGitCmd(ctx, "-C", dir, "merge-base", "--is-ancestor", ancestor, descendant)
 	return cmd.Run() == nil
+}
+
+// maxClassifyCommits bounds how much history UnmatchedCommits will diff. Past
+// it the comparison is refused rather than run: a branch force-moved across a
+// long divergence would otherwise spend the push's remaining timeout producing
+// patches, and a check that runs out of time ends as "could not determine"
+// anyway — refusing up front gets there without holding the repo lock for it.
+var maxClassifyCommits = 2000
+
+// patchIDArgs are the `git log` arguments that make a patch-id a statement about
+// content, and about nothing else.
+//
+// --binary puts the bytes of a binary change into the patch; without it both
+// sides print "Binary files differ" and any two binary edits match. --no-renames,
+// --no-textconv, --no-ext-diff, --no-color and the pinned prefixes remove the
+// ways local configuration can reshape the text. Both sides are hashed under the
+// same configuration in any case, so these are about determinism, not about
+// making the two sides comparable.
+var patchIDArgs = []string{
+	"log", "-p", "--binary", "--no-merges", "--no-color", "--no-ext-diff",
+	"--no-textconv", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/",
+	"--format=commit %H",
+}
+
+// UnmatchedCommits lists the commits an overwrite of discarded by kept lost.
+//
+// Every commit only discarded reaches is hashed with `git patch-id --verbatim`
+// and looked for among the patch-ids of the commits only kept reaches. A rebase
+// re-creates each commit under a new SHA with the same diff, so every one is
+// found; a reset that throws work away leaves them unfound.
+//
+// Verbatim, not the patch-id `git log --cherry-mark` uses: that one ignores
+// whitespace, so a commit re-indented on the other side — a YAML key moved out
+// of its parent, a Makefile tab turned into spaces — matched although the bytes
+// it carried exist nowhere in the new history. That is a loss reported as
+// harmless, the one mistake this check must not make.
+//
+// Two shapes are deliberately left unmatched even when nothing was lost, and
+// both err toward the alert:
+//   - a merge commit has no patch-id, and the conflict resolution a merge can
+//     carry is exactly what a patch comparison cannot see;
+//   - a rebase that resolved a conflict changes that commit's diff.
+//
+// A commit with an empty diff has no patch-id either, and is not counted: it
+// carried no content, so discarding it lost none. Only its message is gone.
+//
+// Author and subject are NUL-separated because a subject can contain any
+// printable character, including the one a friendlier separator would use.
+func (d *defaultGitRunner) UnmatchedCommits(ctx context.Context, dir, kept, discarded string) ([]history.LostCommit, int, error) {
+	rng := kept + "..." + discarded
+
+	counts, err := gitOutput(ctx, dir, "rev-list", "--count", "--left-right", rng)
+	if err != nil {
+		return nil, 0, err
+	}
+	var left, right int
+	if _, err := fmt.Sscanf(counts, "%d\t%d", &left, &right); err != nil {
+		return nil, 0, fmt.Errorf("rev-list --count %s: unexpected output %q", rng, counts)
+	}
+	if left+right > maxClassifyCommits {
+		return nil, 0, fmt.Errorf("%s spans %d commits, more than the %d this check compares", rng, left+right, maxClassifyCommits)
+	}
+
+	listing, err := gitOutput(ctx, dir, "log", "--right-only", "--format=%H%x00%P%x00%an%x00%s", rng)
+	if err != nil {
+		return nil, 0, err
+	}
+	commits, err := parseSideCommits(listing)
+	if err != nil {
+		return nil, 0, fmt.Errorf("log %s: %w", rng, err)
+	}
+	keptIDs, err := patchIDs(ctx, dir, "--left-only", rng)
+	if err != nil {
+		return nil, 0, err
+	}
+	discardedIDs, err := patchIDs(ctx, dir, "--right-only", rng)
+	if err != nil {
+		return nil, 0, err
+	}
+	present := make(map[string]bool, len(keptIDs))
+	for _, id := range keptIDs {
+		present[id] = true
+	}
+
+	var lost []history.LostCommit
+	total := 0
+	for _, c := range commits {
+		if !c.merge {
+			id, hasPatch := discardedIDs[c.SHA]
+			if !hasPatch || present[id] {
+				continue
+			}
+		}
+		total++
+		if len(lost) < history.MaxLostCommits {
+			lost = append(lost, c.LostCommit)
+		}
+	}
+	return lost, total, nil
+}
+
+// sideCommit is one commit from one side of a symmetric difference.
+type sideCommit struct {
+	history.LostCommit
+	merge bool
+}
+
+// parseSideCommits reads "<sha>\0<parents>\0<author>\0<subject>" lines, newest
+// first as git log prints them.
+func parseSideCommits(out string) ([]sideCommit, error) {
+	var commits []sideCommit
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.SplitN(line, "\x00", 4)
+		if len(fields) != 4 {
+			return nil, fmt.Errorf("unexpected line %q", line)
+		}
+		commits = append(commits, sideCommit{
+			LostCommit: history.LostCommit{SHA: fields[0], Author: fields[2], Subject: fields[3]},
+			merge:      strings.Contains(fields[1], " "),
+		})
+	}
+	return commits, nil
+}
+
+// patchIDs maps each non-merge commit on one side of rng to its verbatim
+// patch-id. A commit with an empty diff produces no patch-id and is absent.
+//
+// The patches are streamed from `git log` straight into `git patch-id` rather
+// than buffered: the kept side of a rebase onto a long-moved base can be large.
+func patchIDs(ctx context.Context, dir, side, rng string) (map[string]string, error) {
+	logCmd := newGitCmd(ctx, append(append([]string{"-C", dir}, patchIDArgs...), side, rng)...)
+	idCmd := newGitCmd(ctx, "-C", dir, "patch-id", "--verbatim")
+	patches, err := logCmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("patch-id %s %s: %w", side, rng, err)
+	}
+	var out, logErr, idErr bytes.Buffer
+	logCmd.Stderr = &logErr
+	idCmd.Stdin = patches
+	idCmd.Stdout = &out
+	idCmd.Stderr = &idErr
+	if err := logCmd.Start(); err != nil {
+		return nil, fmt.Errorf("log -p %s %s: %w", side, rng, err)
+	}
+	// patch-id reads the pipe to EOF before logCmd is waited on, which is the
+	// order StdoutPipe requires.
+	idRunErr := idCmd.Run()
+	logWaitErr := logCmd.Wait()
+	if idRunErr != nil {
+		return nil, fmt.Errorf("patch-id %s %s: %w: %s", side, rng, idRunErr, idErr.String())
+	}
+	if logWaitErr != nil {
+		return nil, fmt.Errorf("log -p %s %s: %w: %s", side, rng, logWaitErr, logErr.String())
+	}
+	return parsePatchIDs(out.String())
+}
+
+// parsePatchIDs reads `git patch-id` output, "<patch-id> <commit>" per line.
+func parsePatchIDs(out string) (map[string]string, error) {
+	ids := make(map[string]string)
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" {
+			continue
+		}
+		id, commit, found := strings.Cut(line, " ")
+		if !found || id == "" || commit == "" {
+			return nil, fmt.Errorf("patch-id: unexpected line %q", line)
+		}
+		ids[commit] = id
+	}
+	return ids, nil
+}
+
+// gitOutput runs a local git command in dir and returns its trimmed stdout.
+func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := newGitCmd(ctx, append([]string{"-C", dir}, args...)...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", args[0], err, stderr.String())
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 // ListRefs returns every local branch/tag ref (full name) in the mirror dir.
@@ -1091,6 +1283,46 @@ func (s *Service) withGitTimeout(ctx context.Context) (context.Context, context.
 	return context.WithTimeout(ctx, time.Duration(s.timeoutSeconds)*time.Second)
 }
 
+// remoteMetaTimeout bounds a single remote metadata query (ls-remote),
+// separately from the whole-operation budget that the clone and the push share.
+//
+// It needs its own because the two are nothing alike. A metadata query is one
+// round trip (0.4s against the 12.6GB mirror on GitLab), while timeout_seconds
+// is sized for a full clone and a repack — twenty minutes. Inheriting that
+// meant nothing in this process bounded an ls-remote at all: the only thing
+// that ever stopped one was libcurl's own default connect timeout of 300s. That
+// is how a single dropped DNS query on 2026-09-19 became a five-minute stall
+// which held the per-repo lock for its whole duration, so every event for that
+// repo queued behind a query that was never going to answer.
+//
+// Decided 2026-09-21: 180s, not 60s. A no-op sync against codecommit-eu
+// normally takes 2-7s end to end, but took 39s, 49s and over 60s within one
+// hour that day, and the 60s bound killed the last one in planPush. 180s still
+// stops a dead connection two minutes before libcurl's 300s default would.
+//
+// The parent ctx still wins where it is shorter, so configuring a small
+// timeout_seconds is not quietly overridden here.
+const remoteMetaTimeout = 180 * time.Second
+
+// withRemoteMetaTimeout derives the ctx for a remote metadata query.
+func withRemoteMetaTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, remoteMetaTimeout)
+}
+
+// remoteRefs reads a remote's ref tips under remoteMetaTimeout.
+func (s *Service) remoteRefs(ctx context.Context, rem provider.Remote) (map[string]string, error) {
+	ctx, cancel := withRemoteMetaTimeout(ctx)
+	defer cancel()
+	return s.git.RemoteRefs(ctx, rem)
+}
+
+// remoteRefTip reads one remote ref tip under remoteMetaTimeout.
+func (s *Service) remoteRefTip(ctx context.Context, rem provider.Remote, refType, refName string) (string, error) {
+	ctx, cancel := withRemoteMetaTimeout(ctx)
+	defer cancel()
+	return s.git.RefTip(ctx, rem, refType, refName)
+}
+
 // allowsSourceToTarget returns true if direction permits source → target sync.
 func allowsSourceToTarget(direction string) bool {
 	dir := strings.ToLower(direction)
@@ -1596,7 +1828,7 @@ func (s *Service) doRestoreRef(ctx context.Context, repoCfg config.RepoConfig, f
 
 	// The hole has to still be there. A ref that came back means someone acted
 	// after the delete, and a restore must never be the thing that erases them.
-	switch tip, err := s.git.RefTip(ctx, tgtRem, refType, refName); {
+	switch tip, err := s.remoteRefTip(ctx, tgtRem, refType, refName); {
 	case err != nil:
 		s.notifyRestoreFailed(repoCfg, refType, refName, route, actor, err)
 		s.record(hist.With(history.ResultFail, history.ReasonCheckRef, err), histStart)
@@ -1746,7 +1978,7 @@ func (s *Service) doDeleteRef(ctx context.Context, repoCfg config.RepoConfig, fr
 	// The same call also returns the tip as it was just before the delete. Once
 	// the delete is done there is nothing left at the destination to query, so if
 	// it were not read here nobody could tell what disappeared.
-	tip, err := s.git.RefTip(ctx, tgtRem, refType, refName)
+	tip, err := s.remoteRefTip(ctx, tgtRem, refType, refName)
 	if err != nil {
 		s.notifier.Send(notify.Message{
 			Level:      "error",
@@ -2081,7 +2313,7 @@ func (s *Service) planPush(ctx context.Context, mirrorDir string, tgtRem provide
 	if err != nil {
 		return plan, fmt.Errorf("read local tips: %w", err)
 	}
-	remote, err := s.git.RemoteRefs(ctx, tgtRem)
+	remote, err := s.remoteRefs(ctx, tgtRem)
 	if err != nil {
 		return plan, fmt.Errorf("read destination tips: %w", err)
 	}
@@ -2290,8 +2522,9 @@ func (s *Service) doMirror(ctx context.Context, repoCfg config.RepoConfig, fromP
 	histReason := ""
 	alerted := false
 	if len(res.Forced) > 0 {
+		s.classifyForced(ctx, mirrorDir, res.Forced, logger)
 		hist.Forced = res.Forced
-		histReason = history.ReasonForcedUpdate
+		histReason = history.ForcedReason(res.Forced)
 		alerted = s.reportForced(repoCfg, meta, forcedReport{
 			route:   route,
 			dest:    hist.To,
@@ -2315,6 +2548,14 @@ func (s *Service) doMirror(ctx context.Context, repoCfg config.RepoConfig, fromP
 		route,
 		elapsed.Round(time.Millisecond),
 		notify.Link(tgt.WebURL(toPath), s.endpoint(toProvider, toPath)))
+	// A rewrite that lost nothing raises no alert, but it is still a rewrite, and
+	// the success message is the only thing that reaches Slack for this push.
+	// One line keeps it visible without turning it into an interruption.
+	for _, f := range res.Forced {
+		if f.Preserved && strings.HasPrefix(f.Ref, refsHeadsPrefix) {
+			body += fmt.Sprintf("\nRewritten: %s (content preserved)", f.Ref)
+		}
+	}
 	if meta.Ref != "" {
 		if meta.IsTag() {
 			body += fmt.Sprintf("\nTag: %s", meta.RefName())
@@ -2338,17 +2579,36 @@ func (s *Service) doMirror(ctx context.Context, repoCfg config.RepoConfig, fromP
 	return nil
 }
 
-// reportForced logs every overwritten ref and alerts on the ones that matter.
+// classifyForced marks each overwritten branch Preserved or lists what it lost.
 //
-// Only branches raise a Slack alert. A tag moving non-fast-forward is routine
-// here — a build pipeline that reuses tag names re-points them on every run, and
-// an alert that fires on routine traffic is one people learn to dismiss, which
-// is the exact failure this change exists to prevent. A branch is different: in
-// a mirror there is no ordinary reason for one to move non-fast-forward. It is
-// either a deliberate rewrite upstream or this service overwriting a push it had
-// not fetched yet, and the second one is silent data loss. Tags are still
-// recorded in the history either way, so the evidence is never thrown away —
-// only the interruption is rationed.
+// It runs in the source's mirror dir after the push. Both tips are there: the
+// new one was just pushed from it, and the old one is what planPush confirmed
+// present before letting a divergent push through — a destination tip this side
+// had never fetched is withheld, not forced. A force requested past the guard
+// can carry a tip that is not, and then the check fails, which is fine: a
+// failed check leaves the ref unpreserved, and unpreserved is the alert.
+//
+// Tags are left unchecked. They never raise an alert, and a build tag re-pointed
+// across a long stretch of history is the one case where the comparison could
+// cost real time while deciding nothing.
+func (s *Service) classifyForced(ctx context.Context, mirrorDir string, forced []history.ForcedRef, logger *slog.Logger) {
+	for i := range forced {
+		f := &forced[i]
+		if !strings.HasPrefix(f.Ref, refsHeadsPrefix) {
+			continue
+		}
+		lost, total, err := s.git.UnmatchedCommits(ctx, mirrorDir, f.New, f.Old)
+		if err != nil {
+			logger.Warn("could not check what a forced update discarded; treating it as a loss",
+				"ref", f.Ref, "old", f.Old, "new", f.New, "error", err)
+			continue
+		}
+		f.Preserved = total == 0
+		f.Lost = lost
+		f.LostTotal = total
+	}
+}
+
 // forcedReport is everything an overwrite alert needs to stand on its own.
 //
 // It carries route, target and duration because the alert replaces the success
@@ -2478,20 +2738,50 @@ func (s *Service) reportHeld(repoCfg config.RepoConfig, meta EventMeta, rep held
 	})
 }
 
+// reportForced logs every overwritten ref and alerts on the ones that matter.
+//
+// Only branches raise a Slack alert. A tag moving non-fast-forward is routine
+// here — a build pipeline that reuses tag names re-points them on every run, and
+// an alert that fires on routine traffic is one people learn to dismiss, which
+// is the exact failure this change exists to prevent. A branch is different: in
+// a mirror there is no ordinary reason for one to move non-fast-forward. It is
+// either a deliberate rewrite upstream or this service overwriting a push it had
+// not fetched yet, and the second one is silent data loss. Tags are still
+// recorded in the history either way, so the evidence is never thrown away —
+// only the interruption is rationed.
+//
+// Of the branches, only the ones that may have lost commits interrupt. A branch
+// classifyForced marked Preserved was rewritten, not destroyed — a rebase or an
+// amend — and alerting on it is the routine-traffic trap again, one rebase at a
+// time. It stays in the log, the history and the success message. When a loss
+// and a preserved rewrite land in the same push, the alert names both, so the
+// reader sees the whole push and not just the half that fired.
+//
+// It returns true when it sent the alert, which replaces the success message.
 func (s *Service) reportForced(repoCfg config.RepoConfig, meta EventMeta, rep forcedReport, logger *slog.Logger) bool {
-	var branches []history.ForcedRef
+	var lossy, preserved []history.ForcedRef
 	for _, f := range rep.forced {
-		logger.Warn("forced update: destination ref overwritten non-fast-forward",
-			"ref", f.Ref, "old", f.Old, "new", f.New)
-		if strings.HasPrefix(f.Ref, refsHeadsPrefix) {
-			branches = append(branches, f)
+		if f.Preserved {
+			logger.Info("rewritten: destination ref overwritten non-fast-forward, content preserved",
+				"ref", f.Ref, "old", f.Old, "new", f.New)
+		} else {
+			logger.Warn("forced update: destination ref overwritten non-fast-forward",
+				"ref", f.Ref, "old", f.Old, "new", f.New, "lost_commits", f.LostTotal)
+		}
+		if !strings.HasPrefix(f.Ref, refsHeadsPrefix) {
+			continue
+		}
+		if f.Preserved {
+			preserved = append(preserved, f)
+		} else {
+			lossy = append(lossy, f)
 		}
 	}
-	if len(branches) == 0 {
+	if len(lossy) == 0 {
 		return false
 	}
 
-	// One recovery line per branch, each carrying its own old tip.
+	// One block per branch, each carrying its own old tip and what it lost.
 	//
 	// The SHA is written into the command rather than left as a placeholder
 	// because this alert is read when something has already gone wrong, often by
@@ -2499,10 +2789,11 @@ func (s *Service) reportForced(repoCfg config.RepoConfig, meta EventMeta, rep fo
 	// and into a template is exactly the step that gets fumbled. The URL stays a
 	// placeholder on purpose — the only destination URL this process holds is
 	// the clone URL, and that one carries the credentials.
-	lines := make([]string, 0, len(branches))
-	recovery := make([]string, 0, len(branches))
-	for _, f := range branches {
+	lines := make([]string, 0, len(lossy))
+	recovery := make([]string, 0, len(lossy))
+	for _, f := range lossy {
 		lines = append(lines, fmt.Sprintf("• %s: %s → %s", f.Ref, f.Old, f.New))
+		lines = append(lines, lostCommitLines(f)...)
 		recovery = append(recovery, fmt.Sprintf("  git fetch <clone-url> %s", f.Old))
 	}
 
@@ -2511,6 +2802,13 @@ func (s *Service) reportForced(repoCfg config.RepoConfig, meta EventMeta, rep fo
 		"until git garbage-collects them — recover with:\n%s",
 		rep.route, rep.elapsed.Round(time.Millisecond), rep.target,
 		strings.Join(lines, "\n"), rep.dest, strings.Join(recovery, "\n"))
+	if len(preserved) > 0 {
+		kept := make([]string, 0, len(preserved))
+		for _, f := range preserved {
+			kept = append(kept, fmt.Sprintf("• %s: %s → %s", f.Ref, f.Old, f.New))
+		}
+		body += "\n\nAlso rewritten in this push, with every change still present byte for byte:\n" + strings.Join(kept, "\n")
+	}
 
 	s.notifier.Send(notify.Message{
 		Level:      "error",
@@ -2519,4 +2817,32 @@ func (s *Service) reportForced(repoCfg config.RepoConfig, meta EventMeta, rep fo
 		WebhookURL: repoCfg.SlackWebhookURL,
 	})
 	return true
+}
+
+// lostCommitLines renders what one overwritten branch lost, for the alert.
+//
+// A failed check has nothing to list, and says so instead of printing nothing:
+// an empty list under a loss alert reads as "nothing was lost", which is the
+// one conclusion the check did not reach.
+func lostCommitLines(f history.ForcedRef) []string {
+	if len(f.Lost) == 0 {
+		return []string{"    (could not determine which commits were discarded — compare the two tips by hand)"}
+	}
+	out := make([]string, 0, len(f.Lost)+1)
+	for _, c := range f.Lost {
+		out = append(out, fmt.Sprintf("    lost %s %s: %s", shortSHA(c.SHA), c.Author, c.Subject))
+	}
+	if more := f.LostTotal - len(f.Lost); more > 0 {
+		out = append(out, fmt.Sprintf("    … and %d more", more))
+	}
+	return out
+}
+
+// shortSHA abbreviates a commit name for display. The full name is still what
+// the recovery command carries — a remote will not serve an abbreviated one.
+func shortSHA(sha string) string {
+	if len(sha) > 10 {
+		return sha[:10]
+	}
+	return sha
 }
