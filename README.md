@@ -15,7 +15,7 @@ Supports CodeCommit, GitLab, GitHub with any-to-any mirroring via SQS polling an
                     ┌──────────────────────┐            ┌──────────────────┐
                     │                      │            │                  │
  ┌──────────────┐   │  EventBridge → SQS   │──(poll)──▶ │                  │──▶ GitLab
- │  CodeCommit  │──▶│  (referenceUpdated)  │            │                  │
+ │  CodeCommit  │──▶│     (reference*)     │            │                  │
  └──────────────┘   │         + DLQ        │            │                  │──▶ GitHub
                     └──────────────────────┘            │    Mirror Svc    │
                                                         │                  │──▶ CodeCommit
@@ -41,8 +41,8 @@ Supports CodeCommit, GitLab, GitHub with any-to-any mirroring via SQS polling an
 
 | Source Provider | Event Delivery | Trigger |
 |-----------------|---------------|---------|
-| **CodeCommit** | EventBridge → SQS → long-polling | `referenceUpdated` event |
-| **GitLab** | Push Webhook → `POST /webhook/gitlab` | Push event |
+| **CodeCommit** | EventBridge → SQS → long-polling | `referenceCreated` · `referenceUpdated` events (deletes: `referenceDeleted`) |
+| **GitLab** | Push Webhook → `POST /webhook/gitlab` | Push event · Tag push event |
 | **GitHub** | Push Webhook → `POST /webhook/github` | Push event |
 
 <br/>
@@ -53,7 +53,7 @@ Supports CodeCommit, GitLab, GitHub with any-to-any mirroring via SQS polling an
 - **Any-to-any**: Any provider can mirror to any other provider
 - **Multi-repo**: Configure multiple repositories in a single instance
 - **Bidirectional**: `source-to-target` / `target-to-source` / `bidirectional`
-- **Delete propagation**: A branch/tag deletion on one side propagates to the other (CodeCommit ↔ GitLab/GitHub). Idempotent handling breaks the echo-delete loop.
+- **Delete propagation**: A branch/tag deletion on one side propagates to the other (CodeCommit ↔ GitLab/GitHub and GitLab ↔ GitLab alike). Idempotent handling breaks the echo-delete loop.
 - **Ref restore**: Because a delete records the tip it removed, the console can put that ref back with one click. It refuses rather than overwrite if the ref returned in the meantime.
 - **Rewind guard**: Before pushing, each ref is compared against the destination's current tip. A push that would move the destination **backwards** — because it already contains what this side holds — is withheld rather than forced, and the write itself carries a `--force-with-lease` against the tip it was checked against. A deliberate rewind is applied on request (`force`, see [Retry API](docs/retry-api.md)).
 - **Loop detection**: Skips notification on no-op push (already up-to-date), preventing redundant alerts in bidirectional sync
@@ -72,7 +72,7 @@ Supports CodeCommit, GitLab, GitHub with any-to-any mirroring via SQS polling an
 - **Language**: Go 1.26+
 - **AWS SDK**: aws-sdk-go-v2 (SQS consumer)
 - **Git**: Incremental `git fetch --prune` (with `git clone --mirror` fallback) / `git push` with a per-ref `--force-with-lease`
-- **Config**: YAML with `${ENV_VAR}` expansion (credentials only; repos defined directly)
+- **Config**: YAML with `${ENV_VAR}` expansion (credentials and endpoints via env vars; repos defined directly)
 - **CI/CD**: GitHub Actions (test, release, changelog)
 - **Runtime**: Kubernetes (Alpine-based Docker image)
 
@@ -170,7 +170,7 @@ repos:
 |-----------|-------------|---------|---------|
 | `source-to-target` | Source → Target only | SQS (CodeCommit) or source webhook | CodeCommit → GitLab |
 | `target-to-source` | Target → Source only | Target provider webhook **required** | GitLab → CodeCommit |
-| `bidirectional` | Both directions | SQS + target webhook **both required** | CodeCommit ↔ GitLab |
+| `bidirectional` | Both directions | SQS (or source webhook) + target webhook **both required** | CodeCommit ↔ GitLab |
 
 > **Note**: `target-to-source` and `bidirectional` require webhook configuration on the target provider (GitLab/GitHub).
 > If using only `source-to-target` with CodeCommit as source, SQS (EventBridge) triggers automatically — no webhook setup needed.
@@ -184,7 +184,7 @@ repos:
 Deleting a branch/tag on one side deletes it on the other. The mirror would otherwise propagate only pushes and leave deletes behind, accumulating orphan refs on one side.
 
 - **CodeCommit → target**: EventBridge `referenceDeleted` → SQS → ref deleted on the target (GitLab/GitHub).
-- **target → CodeCommit**: GitLab/GitHub have no dedicated delete webhook event, so the delete is detected from the push payload — GitLab sends a zero-SHA `after`, GitHub sends `deleted: true`. **No extra webhook configuration is needed** (the push events you already receive are enough).
+- **GitLab/GitHub → other side**: the delete is detected from the push payload — GitLab sends a zero-SHA `after`, GitHub sends `deleted: true`. GitLab has no dedicated delete webhook event; GitHub does (`delete`), but deleting a ref fires a push event with `deleted: true` as well, so there is no need to subscribe to it. **No extra webhook configuration is needed** (the push events you already receive are enough).
 - **Idempotent handling**: Before deleting, `git ls-remote` reads the ref's tip on the destination; if the ref is already gone, the operation ends as a successful no-op. This auto-terminates the bidirectional delete loop ("delete A → delete B → B's delete event echoes back to A") on one leg.
 - **The discarded tip is recorded**: that same `ls-remote` returns the SHA the ref pointed at, and it is written to the history event (`deleted_tip`) and the Slack message before the delete runs. A delete is the one operation that leaves nothing behind to look up — afterwards the destination names neither the ref nor the commit — so this is the only surviving handle on what was removed. The console shows it with a `git fetch <clone-url> <sha>` recovery line, the same way it does for an overwritten tip. git keeps the objects until it garbage-collects, so the window is real but not indefinite.
 - **A recorded tip can be put back**: because `deleted_tip` survives, the console offers a restore button on that row instead of only printing the two commands to run by hand. The restore only ever fills a hole it can still see — if the ref is back on the destination it refuses (`ref-exists`) rather than overwrite, and if git has already collected the commit it fails as `object-gone`. Once the ref is re-created the mirror propagates it to the other side like any other push. See [Console](#console-separate-port).
@@ -214,7 +214,7 @@ repos:
 **Behavior**:
 - For a matched ref, **events in the opposite direction (push and delete) are silently skipped** (the SQS message is still deleted, so no retries / DLQ).
 - A push is **scoped to the ref the event named**. When an event carries a ref (`meta.Ref != ""`), only that single ref is pushed — **whether or not** the repo declares `ref_overrides`. If that ref does not exist locally the push is skipped as `no-refs-to-push` rather than failing (this guards a retry for a branch that was deleted, and a fetch↔push prune race).
-- An event with no ref (a full sync, or the hourly reconcile cron) pushes everything (`--all`) for a repo **without** `ref_overrides`, and every local ref minus the ones excluded for this direction for a repo **with** them.
+- An event with no ref (a full sync, or the hourly reconcile cron) enumerates every local ref and pushes each one with its own lease, whether or not the repo declares `ref_overrides`; for a repo **with** them, the refs excluded for this direction are left out.
 - If ref enumeration (`ListRefs`) fails the sync ends as an error — it does not fall back to pushing everything. `--all` cannot carry a per-ref lease, so the rewind guard would drop out entirely; a skipped sync is recovered by the next event or the hourly reconcile.
 
 > **Why this is not gated on `ref_overrides`**: gating it that way destroyed a commit on 2026-08-10. A `demo-repo` event for `version/4.2.0` pushed every ref because the repo declares no overrides, and it force-wrote `master-b` from a source that had not yet seen a commit pushed there 49 seconds earlier. An event names the ref it is about; pushing anything else is the mirror acting on state it was not told about. Refs that never get their own event are still reconciled by the hourly cron, which sends no ref and therefore still pushes everything.
@@ -239,7 +239,7 @@ repos:
 
 ### Console (separate port)
 
-The console is served on **its own listener** (`server.console_port`, default 8081), never on the public port. The public route only forwards to `server.port`, so the console is unreachable from outside the cluster and only a reverse-proxy portal attaches to this port.
+The console is served on **its own listener** (`server.console_port`, default 8081), never on the public port. The public route only forwards to `server.port`, so the console is unreachable from outside the cluster and a reverse-proxy portal attaches to this port. Inside the cluster it is a different story: there is no NetworkPolicy, so a pod in any namespace can reach this port directly, bypassing the portal.
 
 The two ports use **separate muxes**. The console handlers are simply not registered on the public mux, and that is the entire guard — which is why nothing a client can forge, such as a header or the `Host` value, takes part in the decision: the socket that accepted the connection is the only thing that decides. On the public port the paths below answer **404, not 403**, because a public caller has no need to learn that the console exists.
 
@@ -248,7 +248,7 @@ The two ports use **separate muxes**. The console handlers are simply not regist
 | `/` | GET | Console page (recent mirror activity) |
 | `/console/api/history` | GET | Recent events as JSON (`limit`, `failures=true`, `forced=true`, `repo=<name>`, `source=<trigger>`, `hide_routine=true`) |
 | `/console/api/retry` | POST | Re-sync one repository (`{"repo": "...", "to": "..."}`). `to` is the destination endpoint of the row being re-run; the server turns that side into the direction that writes it. An explicit `direction` beats it, and with neither the request falls back to `auto`. `409` when `to` is not a side of that repo, or names a direction the repo's `direction` forbids |
-| `/console/api/restore` | POST | Re-create a ref a delete removed (`{"repo": "...", "to": "...", "ref": "refs/heads/x", "sha": "<40-char>"}`). Synchronous; `409` when refused |
+| `/console/api/restore` | POST | Re-create a ref a delete removed (`{"repo": "...", "to": "...", "ref": "refs/heads/x", "sha": "<40-char>"}`). Synchronous; refused with `409` (`ref-exists`, `no-matching-delete`), `403` (`direction`, `ref-override`) or `503` (`repo-busy`), the cause named in `reason` |
 | `/console/api/force` | POST | Apply a rewind the push guard withheld (`{"repo": "...", "to": "...", "ref": "refs/heads/x", "dest": "<40-char>"}`). `dest` is the tip you are overwriting and becomes the push's lease; `409` when no matching hold is recorded |
 | `/console/api/me` | GET | The viewer the portal authenticated, plus the docs link and which write routes are wired in (`user` / `name` / `email` / `groups` / `api_docs_url` / `restore_enabled` / `force_enabled`) |
 
@@ -271,9 +271,9 @@ What the console does:
 - **Re-run a sync** — expanding a row offers a button that re-syncs that repository after a confirmation. Useful for recovering from a failure, and for making one repository catch up without waiting for the hourly reconcile. The button re-runs **the direction that row records**, because it sends the row's destination endpoint along and the server resolves that side into a direction. It used to send `auto`, which on a bidirectional repo always resolves through `retry_direction` (`target-to-source`) — so clicking it on a row that failed `source-to-target` re-ran the other leg, whose destination was already ahead and could therefore only skip, leaving the real gap until the hourly reconcile. The label and the confirmation both name the side being written. Inside a collapsed group the button follows the **failed** event, not the head: the head is the echo coming back the other way, so following it would re-run the leg that already worked.
 - **Restore a deleted ref** — a delete row that recorded a `deleted_tip` carries a red **Restore this ref** button, which re-creates the ref at that tip after a confirmation naming the repository, the destination and the commit. It is a separate button from retry, and red, because this one writes to a repository rather than re-running a sync. The restore is attributed: the portal's `X-Auth-User` becomes the event's `actor` and appears in the Slack message. Restoring propagates — the destination's own push event then carries the ref to the other side.
 - **Apply a withheld rewind** — a row the push guard withheld lists each held ref with the destination tip that stopped the write, and carries a red **Apply rewind of `<ref>`** button per ref. The confirmation names the commit that will be discarded rather than asking "are you sure", because that commit is the decision. The server re-checks the hold against the history before acting, so a press arriving after the two sides converged on their own is refused (`409`) instead of overwriting something. Attributed the same way a restore is. One button moves one ref — a force is never repo-wide.
-- **Who is viewing · API docs** — the header carries a `Hello, <name>` greeting and an `API docs` link. The wording is meant to match the portal a reader clicks through from: being addressed two different ways on two consecutive screens reads as two different systems. The display name falls back `name → user → email`, since an SSO account with no first/last name has an empty display name. The values come from the `X-Auth-User` / `X-Auth-Name` / `X-Auth-Email` / `X-Auth-Groups` headers it sets when proxying. What makes those trustworthy is the listener they arrive on: only the portal reaches the console port, and the portal overwrites any header a client sent under those names. Reached without the portal — a port-forward while debugging — the values are empty and the label stays hidden.
+- **Who is viewing · API docs** — the header carries a `Hello, <name>` greeting and an `API docs` link. The wording is meant to match the portal a reader clicks through from: being addressed two different ways on two consecutive screens reads as two different systems. The display name falls back `name → user → email`, since an SSO account with no first/last name has an empty display name. The values come from the `X-Auth-User` / `X-Auth-Name` / `X-Auth-Email` / `X-Auth-Groups` headers it sets when proxying. What makes those trustworthy is the listener they arrive on: from outside the cluster the console port is reachable only through the portal, and the portal overwrites any header a client sent under those names. A pod inside the cluster can reach the port directly and set `X-Auth-User` to anything, and for that caller the argument does not hold. Reached without the portal — a port-forward while debugging — the values are empty and the label stays hidden.
 
-> 🔑 **Retrying never puts an API token in the browser.** The console asks the server, and **the server calls the mirror service itself**. `RETRY_API_TOKEN` stays inside the pod, and the portal session (login plus group check) is the only credential involved. Such a retry is recorded as `source: console`, which distinguishes it from the hourly reconcile (`cron`).
+> 🔑 **Retrying never puts an API token in the browser.** The console asks the server, and **the server calls the mirror service itself**. `RETRY_API_TOKEN` stays inside the pod, and the portal session (login plus group check) is the only credential involved. A caller inside the cluster that reaches the console port directly needs none at all. Such a retry is recorded as `source: console`, which distinguishes it from the hourly reconcile (`cron`).
 
 > 🛑 **A restore never overwrites.** The server re-reads the destination with `ls-remote` and refuses (`409`, reason `ref-exists`) if the ref came back, because between the row being rendered and the button being pressed someone may have re-created that branch — and overwriting it would be the same accident the feature exists to undo, with a different victim. The push that follows uses `--force-with-lease=<ref>:` (an empty expect means "this ref must not exist"), so even the window between the check and the write is closed by the remote atomically. A plain non-force push was not enough: non-force only rejects non-fast-forward updates, so a branch someone re-created at an **ancestor** of the restored commit would have been silently advanced onto it. A restore also passes the same gates every other write does — it is refused for a side the repo's `direction` never writes to, or a direction a `ref_override` pins away from — and it proceeds only when the history still records that delete (`no-matching-delete`). Restoring the same tip twice is a no-op skip, not an error, and a commit git has already garbage-collected fails as `object-gone` — the mirror cache is tried first, then a direct fetch from the other side. Unlike retry, which answers `202` and reports later, the route is synchronous: the refusal is the interesting outcome and has to reach the person who clicked.
 
@@ -313,7 +313,7 @@ One event looks like this:
 - `action` — `mirror` (branch/tag sync), `delete` (ref delete propagation) or `restore` (a console click putting back what a delete removed). A restore is its own action rather than a mirror because nothing upstream asked for it — a person did.
 - `source` — `webhook` / `sqs` / `cron` (the reconcile CronJob) / `retry-api` (a hand-run call) / `console`.
 - `result` — `ok` / `skip` / `fail`. Failures also carry `err`.
-- `reason` — narrows `result`. A skip is not one thing (`already-up-to-date` / `ref-override` / `no-refs-to-push` / `already-absent`), and without this field those are indistinguishable in the log. It also narrows a success: `forced-update` means the push itself worked, but at least one ref was overwritten non-fast-forward and may have taken commits with it, so whatever lived only on the tip it replaced is gone from the destination; `rewritten` means every overwritten ref was checked and each discarded commit's change is present byte for byte in the new history. Each entry in `forced` carries `preserved`, and an unpreserved one lists what it lost in `lost` (capped) with the full count in `lost_total`. A refused restore names why: `ref-exists` (the ref came back, so re-creating it would overwrite whoever put it there) or `object-gone` (git collected the commit); `create-ref` is a restore that failed at the push itself.
+- `reason` — narrows `result`. A skip is not one thing (`already-up-to-date` / `ref-override` / `no-refs-to-push` / `already-absent` / `destination-ahead` / `lease-rejected`), and without this field those are indistinguishable in the log. It also narrows a success: `forced-update` means the push itself worked, but at least one ref was overwritten non-fast-forward and may have taken commits with it, so whatever lived only on the tip it replaced is gone from the destination; `rewritten` means every overwritten ref was checked and each discarded commit's change is present byte for byte in the new history. Each entry in `forced` carries `preserved`, and an unpreserved one lists what it lost in `lost` (capped) with the full count in `lost_total`. A refused restore names why: `ref-exists` (the ref came back, so re-creating it would overwrite whoever put it there) or `object-gone` (git collected the commit); `create-ref` is a restore that failed at the push itself.
 - `deleted_tip` — on a `delete` that actually removed something, the SHA the ref pointed at, read just before the delete ran. Absent everywhere else, including a delete that found the ref already gone. It exists because a delete leaves nothing behind to look up, so this is the only record of what was discarded.
 - `restored_tip` — on a `restore` that actually re-created the ref, the SHA it was put back at. The counterpart to `deleted_tip`: the two events together tell the whole story of a ref that went away and came back, without anyone having to correlate them by timestamp.
 - `actor` — who a console-driven action is attributed to, read from the portal's `X-Auth-User` header. Set only for actions a person triggers, because those are the only ones with a person behind them — a webhook or an SQS event has a pusher, not an operator. A restore writes to a real repository, so "who did this" has to survive in the record rather than only in whoever happened to be watching the channel.
@@ -464,19 +464,19 @@ make help      # Show all Makefile targets
 
 ## Setting Up Webhooks
 
-> Webhook setup is **required** when direction is `target-to-source` or `bidirectional`.
+> Webhook setup is **required** wherever GitLab/GitHub has to announce a change — on the target for `target-to-source` or `bidirectional`, and also on the source for `source-to-target` or `bidirectional` when the source is GitLab/GitHub.
 > If using only `source-to-target` with CodeCommit as source, SQS triggers automatically — no webhook needed.
 
 <br/>
 
 ### GitLab Webhook
 
-Configure individually for each target GitLab project. See [docs/gitlab-webhook-setup.md](docs/gitlab-webhook-setup.md) for detailed setup guide.
+Configure individually for each target GitLab project (and for the source project too when the source is GitLab). See [docs/gitlab-webhook-setup.md](docs/gitlab-webhook-setup.md) for detailed setup guide.
 
 1. Go to GitLab project > Settings > Webhooks
 2. URL: `http://git-bridge.example.com/webhook/gitlab`
 3. Secret token: (match `WEBHOOK_GITLAB_SECRET`)
-4. Trigger: Push events
+4. Trigger: Push events + Tag push events (check both — Push events alone does not deliver tag pushes)
 5. Enable SSL verification: No (HTTP)
 
 <br/>
@@ -516,7 +516,7 @@ kubectl rollout restart -n git-bridge deployment/git-bridge
 ```
 
 > No changes to `secret.yaml` or `deployment.yaml` are needed.
-> If direction is `target-to-source` or `bidirectional`, webhook setup is also required on the target provider (GitLab/GitHub) project. See [Setting Up Webhooks](#setting-up-webhooks).
+> If direction is `target-to-source` or `bidirectional`, webhook setup is also required on the target provider (GitLab/GitHub) project; if the source is GitLab/GitHub and direction is `source-to-target` or `bidirectional`, the source project needs one too. See [Setting Up Webhooks](#setting-up-webhooks).
 
 <br/>
 

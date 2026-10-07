@@ -141,7 +141,7 @@ repos:
 - IAM user with `codecommit:GitPull` and `codecommit:GitPush` permissions
 - GitLab webhook configured on `server/my-repo` project
   - URL: `http://<git-bridge-host>/webhook/gitlab`
-  - Trigger: Push events
+  - Trigger: Push events + Tag push events
   - See [gitlab-webhook-setup.md](gitlab-webhook-setup.md)
 
 <br/>
@@ -245,7 +245,7 @@ repos:
 
 - GitLab webhook configured on `team/my-repo` project
   - URL: `http://<git-bridge-host>/webhook/gitlab`
-  - Trigger: Push events
+  - Trigger: Push events + Tag push events
 - GitHub personal access token with `repo` scope
 
 <br/>
