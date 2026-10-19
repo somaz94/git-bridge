@@ -24,7 +24,7 @@ Key values:
 | Key | Description | Default |
 |-----|-------------|---------|
 | `image.repository` | Container image repo | `somaz940/git-bridge` |
-| `image.tag` | Image tag | `v0.1.0` |
+| `image.tag` | Image tag | the release pinned in `values.yaml` |
 | `replicaCount` | Number of replicas | `1` |
 | `terminationGracePeriodSeconds` | Pod shutdown deadline; keep it above `config.mirror.drain_timeout_seconds` | `150` |
 | `dnsConfig` | Pod DNS settings (e.g. `ndots: 1`, only when the pod resolves no in-cluster short names) | `{}` |
