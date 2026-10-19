@@ -2,14 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased (2026-07-20)
+## [v0.7.0](https://github.com/somaz94/git-bridge/compare/v0.6.0...v0.7.0) (2026-10-19)
+
+### Features
+
+- **k8s:** add a 150s termination grace period and securityContext to the manifests and optional dnsConfig to the chart ([bff1c31](https://github.com/somaz94/git-bridge/commit/bff1c319519d5919fd1cd994eb62a941b265201f))
+- stop alerting on lossless rewrites and bound ls-remote queries ([4955f95](https://github.com/somaz94/git-bridge/commit/4955f955257e1c41efb7ebda582912be2a81bab5))
+- cap webhook bodies and bound public listener reads ([0503d57](https://github.com/somaz94/git-bridge/commit/0503d575695a88fe83fb476e5ac67e736317d820))
+- add mirror console backed by an event history, with restore and force controls ([459926e](https://github.com/somaz94/git-bridge/commit/459926ec815b003a83a3227ec2ba213d46ec6bee))
 
 ### Bug Fixes
 
+- **k8s:** enforce seccomp RuntimeDefault and a read-only root filesystem ([5d9edca](https://github.com/somaz94/git-bridge/commit/5d9edca20905b0d59ca46790f1a44b79efe2a127))
 - warn when bump-version.sh finds no version to replace ([9a895d9](https://github.com/somaz94/git-bridge/commit/9a895d91afd1dcc37b50f30538402363d48db07d))
+
+### Documentation
+
+- describe the askpass, history and task packages and the Remote/WebURL provider interface ([f5b50cf](https://github.com/somaz94/git-bridge/commit/f5b50cf8ff06fb70e06a46d5c8a0007a5a230210))
+- clarify webhook triggers, delete events and in-cluster console access ([6d51ba4](https://github.com/somaz94/git-bridge/commit/6d51ba43649dc6d6f3aae2327af94396cd70ba33))
 
 ### Builds
 
+- **deps:** Bump the go-minor group with 4 updates (#33) ([#33](https://github.com/somaz94/git-bridge/pull/33)) ([ece7610](https://github.com/somaz94/git-bridge/commit/ece761039add693e916c868befea990027d2e34c))
+- **deps:** Bump the go-minor group with 4 updates (#32) ([#32](https://github.com/somaz94/git-bridge/pull/32)) ([8b16e0c](https://github.com/somaz94/git-bridge/commit/8b16e0c86d3d74f1c23a24ca6f593a051c8fbd10))
+- **deps:** Bump the go-minor group with 4 updates (#31) ([#31](https://github.com/somaz94/git-bridge/pull/31)) ([569a0bd](https://github.com/somaz94/git-bridge/commit/569a0bdf7670565a88e8a2e66ab5c138875d714e))
+- **deps:** Bump the go-minor group with 4 updates (#30) ([#30](https://github.com/somaz94/git-bridge/pull/30)) ([58e91ce](https://github.com/somaz94/git-bridge/commit/58e91ce6e04bef9e44a80169964f13e379a0242e))
+- **deps:** Bump the go-minor group with 4 updates (#29) ([#29](https://github.com/somaz94/git-bridge/pull/29)) ([806257a](https://github.com/somaz94/git-bridge/commit/806257af73ce2b8d90ac6aadfeb4933e2ca80bf2))
+- **deps:** Bump the go-minor group with 4 updates (#28) ([#28](https://github.com/somaz94/git-bridge/pull/28)) ([4d380d4](https://github.com/somaz94/git-bridge/commit/4d380d4cf211269f99015993baf8dff14e164bf3))
+- **deps:** Bump golang in the docker-minor group (#27) ([#27](https://github.com/somaz94/git-bridge/pull/27)) ([255e12a](https://github.com/somaz94/git-bridge/commit/255e12abf02bc1373a632b4050a980311d1876eb))
+- **deps:** Bump the go-minor group with 4 updates (#26) ([#26](https://github.com/somaz94/git-bridge/pull/26)) ([daa282a](https://github.com/somaz94/git-bridge/commit/daa282ae9aea978f5ed317d3d0c72e8e7775259d))
+- **deps:** Bump the go-minor group with 4 updates (#25) ([#25](https://github.com/somaz94/git-bridge/pull/25)) ([65a19b5](https://github.com/somaz94/git-bridge/commit/65a19b5fa186cf35e1160f7f0c32c09a4aeeebae))
+- **deps:** Bump the go-minor group with 4 updates (#24) ([#24](https://github.com/somaz94/git-bridge/pull/24)) ([32ef555](https://github.com/somaz94/git-bridge/commit/32ef555a71386a00708aad9075a21ec820682029))
+- **deps:** Bump docker/login-action in the actions-minor group (#23) ([#23](https://github.com/somaz94/git-bridge/pull/23)) ([476e19e](https://github.com/somaz94/git-bridge/commit/476e19eee2fa52bc6ebca1f53202ca7d95b80625))
+- **deps:** Bump docker/login-action in the actions-minor group (#22) ([#22](https://github.com/somaz94/git-bridge/pull/22)) ([046fd6f](https://github.com/somaz94/git-bridge/commit/046fd6f002349c4215a103627505693d424b8aa0))
+- **deps:** Bump the go-minor group with 4 updates (#21) ([#21](https://github.com/somaz94/git-bridge/pull/21)) ([8a449c3](https://github.com/somaz94/git-bridge/commit/8a449c3a41120309288db85a93bd953dcd7ef004))
 - **deps:** Bump actions/setup-go from 6 to 7 (#19) ([#19](https://github.com/somaz94/git-bridge/pull/19)) ([3b1d059](https://github.com/somaz94/git-bridge/commit/3b1d0596af9e47b5aa1099ae64de18c10bcd0c90))
 - **deps:** Bump the go-minor group with 3 updates (#20) ([#20](https://github.com/somaz94/git-bridge/pull/20)) ([f1b745b](https://github.com/somaz94/git-bridge/commit/f1b745baf77711c5b002b3627cbe6acb093aecda))
 - **deps:** Bump the go-minor group with 3 updates (#18) ([#18](https://github.com/somaz94/git-bridge/pull/18)) ([9a4e934](https://github.com/somaz94/git-bridge/commit/9a4e934c51473586009a71de7573180b2d6d10d1))
@@ -21,6 +47,10 @@ All notable changes to this project will be documented in this file.
 
 ### Continuous Integration
 
+- deduplicate identical commit lines in release notes ([f94e76f](https://github.com/somaz94/git-bridge/commit/f94e76f0281118cd80fea14aaefa9057edfb0a16))
+- trim redundant comments in gitlab-mirror workflow ([244ccb0](https://github.com/somaz94/git-bridge/commit/244ccb08f0df934395471bed1e5382fc4f48d0fa))
+- retry mirror pushes on transient remote failures ([4a82571](https://github.com/somaz94/git-bridge/commit/4a825718a921147b795c1a732e0e55490e7e4bc5))
+- drop the dead issue-close trigger from changelog generation ([26ad6c6](https://github.com/somaz94/git-bridge/commit/26ad6c6511cf385fefca613a573bc6512617581b))
 - remove DCO workflow ([f9a11aa](https://github.com/somaz94/git-bridge/commit/f9a11aab4d2a7cb34683ac603efdeeac00ce664d))
 - adopt semantic-pr, labels, lock-threads, PR size, and auto-assign reusables ([87d0b7d](https://github.com/somaz94/git-bridge/commit/87d0b7d418f025d9af346ffd4eba89c7bb05883d))
 - use reusable stale-issues workflow ([1005aa3](https://github.com/somaz94/git-bridge/commit/1005aa31c6bd1067d5b1eb1d0a364a0b0c9e082c))
@@ -30,6 +60,13 @@ All notable changes to this project will be documented in this file.
 - add ok-to-test workflow stub ([4f5077e](https://github.com/somaz94/git-bridge/commit/4f5077ea2a82f2f11834b071a05a9daf55e55702))
 - add PR welcome workflow stub ([b43c8b0](https://github.com/somaz94/git-bridge/commit/b43c8b04ea0c4cde6b417ab5a3ef5a820e92c3e2))
 - add DCO check via shared reusable workflow ([d4b0ef4](https://github.com/somaz94/git-bridge/commit/d4b0ef4bcb984f91b384a57622583abab253b17e))
+
+### Chores
+
+- bump version to v0.7.0 ([a930a7f](https://github.com/somaz94/git-bridge/commit/a930a7f8454e8e5f1b8577c0aafda54b0c2a3d1c))
+- base create-pr.sh on origin/main ([e0f5a11](https://github.com/somaz94/git-bridge/commit/e0f5a1157f82fcd4e505d67799a8db80c4808995))
+- classify scoped and breaking commits in create-pr.sh ([d8bd61c](https://github.com/somaz94/git-bridge/commit/d8bd61c6de9c0757c493c8e29130fbdc136e627f))
+- trim boilerplate comments in repo config and scripts ([f2179a2](https://github.com/somaz94/git-bridge/commit/f2179a2ca1b1230f41893faa741512f475f779e6))
 
 ### Contributors
 
