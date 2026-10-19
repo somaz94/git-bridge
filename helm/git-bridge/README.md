@@ -26,6 +26,8 @@ Key values:
 | `image.repository` | Container image repo | `somaz940/git-bridge` |
 | `image.tag` | Image tag | `v0.1.0` |
 | `replicaCount` | Number of replicas | `1` |
+| `terminationGracePeriodSeconds` | Pod shutdown deadline; keep it above `config.mirror.drain_timeout_seconds` | `150` |
+| `dnsConfig` | Pod DNS settings (e.g. `ndots: 1`, only when the pod resolves no in-cluster short names) | `{}` |
 | `config` | git-bridge config.yaml (rendered into ConfigMap) | `{}` |
 | `secret.create` | Create chart-managed Secret | `true` |
 | `secret.existingSecret` | Reference external Secret | `""` |

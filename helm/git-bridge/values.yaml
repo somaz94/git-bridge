@@ -34,6 +34,17 @@ securityContext:
       - ALL
   readOnlyRootFilesystem: false
 
+# Must exceed config.mirror.drain_timeout_seconds (default 120), or the kubelet SIGKILLs an in-flight drain.
+terminationGracePeriodSeconds: 150
+
+# Optional pod dnsConfig. ndots:1 skips the search-domain lookups for external
+# hosts, so use it only when the pod resolves no in-cluster short names.
+dnsConfig: {}
+# Example:
+#   options:
+#     - name: ndots
+#       value: "1"
+
 # ---------------------------------------------------------------------------
 # git-bridge config.yaml — rendered into a ConfigMap and mounted at
 # /etc/git-bridge/config.yaml. Credentials reference ${ENV_VAR} expansion
