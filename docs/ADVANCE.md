@@ -38,6 +38,7 @@ This guide covers various mirroring scenarios with complete configuration exampl
 | GitLab | GitHub | `source-to-target` | GitLab webhook | Yes (GitLab) | Tested |
 | GitLab | GitHub | `target-to-source` | GitHub webhook | Yes (GitHub) | Tested |
 | GitLab | GitHub | `bidirectional` | GitLab + GitHub webhook | Yes (both) | Tested |
+| GitLab | GitLab | `bidirectional` | Both GitLab webhooks | Yes (both) | Tested |
 
 > **Key**: CodeCommit uses SQS (EventBridge) for source events. GitLab and GitHub use webhooks for both source and target events.
 

@@ -84,6 +84,7 @@ Supports CodeCommit, GitLab, GitHub with any-to-any mirroring via SQS polling an
 git-bridge/
 ├── cmd/git-bridge/         # Entry point
 ├── internal/
+│   ├── askpass/            # git credential side-channel (GIT_ASKPASS helper — no token on the command line)
 │   ├── config/             # YAML config with env var expansion
 │   ├── consumer/
 │   │   ├── sqs.go          # SQS consumer (CodeCommit events via EventBridge)
@@ -91,7 +92,9 @@ git-bridge/
 │   ├── mirror/             # Git mirror operations (incremental fetch/clone, push, direction-aware)
 │   ├── provider/           # Git provider abstraction (CodeCommit, GitLab, GitHub)
 │   ├── notify/             # Slack webhook notifications
-│   └── server/             # HTTP server (health + webhook endpoints)
+│   ├── history/            # Mirror history (JSONL on the volume + in-memory tail for the console)
+│   ├── task/               # Group owning the background sync goroutines (drained on shutdown)
+│   └── server/             # HTTP server (public: health + webhook + Swagger UI / console: its own port)
 ├── k8s/                    # Kubernetes manifests (production, minimal comments)
 │   ├── namespace.yaml
 │   ├── secret.yaml         # Credentials only (tokens, keys, passwords)
@@ -526,12 +529,24 @@ Implement the `Provider` interface in `internal/provider/`:
 
 ```go
 type Provider interface {
-    CloneURL(repoPath string) string
+    // Remote returns the credential-free HTTPS address together with the
+    // credentials git should be handed out of band.
+    Remote(repoPath string) Remote
+    // WebURL returns the browser URL (no credentials).
+    WebURL(repoPath string) string
     Type() string
 }
 ```
 
 Register it in `provider.New()`.
+
+🔴 Never put credentials in `Remote.URL`. Return the token as `Username`/`Password`
+instead; `internal/askpass` hands it to git over `GIT_ASKPASS`. A credential inside
+the URL becomes a git command-line argument, and from there it leaks two ways:
+`ps` output on the same node, and `remote.origin.url`, which `--mirror` clone writes
+verbatim into the cache directory on the PVC. git's own output is not one of them —
+it strips userinfo from every URL it prints, so neither its error messages nor
+`FETCH_HEAD` carry the token.
 
 <br/>
 
