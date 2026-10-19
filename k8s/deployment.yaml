@@ -25,6 +25,8 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: git-bridge
           image: somaz940/git-bridge:v0.5.0
@@ -34,7 +36,9 @@ spec:
             capabilities:
               drop:
                 - ALL
-            readOnlyRootFilesystem: false
+            # Only /tmp/git-bridge (the work volume) is written; git keeps its pack
+            # temporaries inside the repository and never creates files under HOME.
+            readOnlyRootFilesystem: true
           ports:
             - containerPort: 8080
               protocol: TCP

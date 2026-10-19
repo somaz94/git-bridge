@@ -26,13 +26,17 @@ podSecurityContext:
   runAsUser: 1000
   runAsGroup: 1000
   fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
 
 securityContext:
   allowPrivilegeEscalation: false
   capabilities:
     drop:
       - ALL
-  readOnlyRootFilesystem: false
+  # Only the work volume (persistence.mountPath) is written; git keeps its pack
+  # temporaries inside the repository and never creates files under HOME.
+  readOnlyRootFilesystem: true
 
 # Must exceed config.mirror.drain_timeout_seconds (default 120), or the kubelet SIGKILLs an in-flight drain.
 terminationGracePeriodSeconds: 150
