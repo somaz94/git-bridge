@@ -108,8 +108,8 @@ const ReasonForcedUpdate = "forced-update"
 // ReasonRewritten narrows ResultOK the same way ReasonForcedUpdate does, for the
 // case where every overwritten ref was checked and found to have lost nothing:
 // each commit that only the old tip reached has a byte-identical patch in the new
-// history. That is what a rebase, an amend of a message, or a rebase onto a
-// newer base looks like.
+// history, or is still on another branch. That is what a rebase, an amend of a
+// message, or backing a merge out of a branch looks like.
 //
 // It exists so the ordinary rewrite stops reading as data loss. An alert that
 // fires on every rebase is one people learn to dismiss, and then the push that
@@ -142,9 +142,21 @@ type ForcedRef struct {
 	// capped at MaxLostCommits. LostTotal is the uncapped count.
 	//
 	// A check that failed leaves both empty while Preserved stays false, so
-	// "nothing listed" never means "nothing lost" — only Preserved says that.
+	// "nothing listed" never means "nothing lost" — only NothingLost says that.
 	Lost      []LostCommit `json:"lost,omitempty"`
 	LostTotal int          `json:"lost_total,omitempty"`
+	// Elsewhere counts the commits that left this branch without an equivalent
+	// but were on another branch of the pushing side when this was judged. That
+	// branch may not exist at the destination, and a later delete of it is not
+	// re-judged here.
+	Elsewhere int `json:"elsewhere,omitempty"`
+}
+
+// NothingLost reports whether the overwrite was checked and every discarded
+// commit survives, either byte for byte in the new history or on another branch.
+// A failed check counts nothing, so it stays false, the alarming answer.
+func (f ForcedRef) NothingLost() bool {
+	return f.Preserved || (f.LostTotal == 0 && f.Elsewhere > 0)
 }
 
 // MaxLostCommits caps how many discarded commits are carried per ref. A reset
@@ -298,7 +310,7 @@ func ForcedReason(forced []ForcedRef) string {
 		return ""
 	}
 	for _, f := range forced {
-		if !f.Preserved {
+		if !f.NothingLost() {
 			return ReasonForcedUpdate
 		}
 	}

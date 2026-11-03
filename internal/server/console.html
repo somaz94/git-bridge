@@ -116,7 +116,7 @@
           </select>
         </label>
         <label><input type="checkbox" id="failuresOnly" /> Failures only</label>
-        <label title="Shows only syncs that overwrote a ref non-fast-forward: red where commits may have been lost, amber where every discarded change was checked and is still present byte for byte. These are recorded as successes, so the Failures filter never surfaces them."><input type="checkbox" id="forcedOnly" /> Forced updates only</label>
+        <label title="Shows only syncs that overwrote a ref non-fast-forward: red where commits may have been lost, amber where every discarded commit was checked and is still present byte for byte or on another branch. These are recorded as successes, so the Failures filter never surfaces them."><input type="checkbox" id="forcedOnly" /> Forced updates only</label>
         <label title="Hides only the scheduled reconciles that found nothing to do. A reconcile that actually mirrored something, or failed, is always shown."><input type="checkbox" id="hideRoutine" checked /> Hide idle reconciles</label>
         <label><input type="checkbox" id="collapse" checked /> Collapse echoes</label>
         <label><input type="checkbox" id="auto" checked /> Auto-refresh</label>
@@ -322,12 +322,14 @@
     }
 
     function forcedRefs(ev) { return Array.isArray(ev.forced) ? ev.forced : []; }
-    // Only a ref the server checked and found intact is preserved. Anything
+    // Only a ref the server checked and found to have lost nothing is amber: every
+    // commit is present byte for byte or still on another branch. Anything
     // else — a loss, a failed check, a tag, a row recorded before the check
     // existed — stays in the red half, because calling a real loss harmless is
     // the mistake that cannot be noticed afterwards.
-    function lossyRefs(ev) { return forcedRefs(ev).filter((f) => !f.preserved); }
-    function preservedRefs(ev) { return forcedRefs(ev).filter((f) => f.preserved); }
+    function nothingLost(f) { return f.preserved || (!f.lost_total && f.elsewhere > 0); }
+    function lossyRefs(ev) { return forcedRefs(ev).filter((f) => !nothingLost(f)); }
+    function preservedRefs(ev) { return forcedRefs(ev).filter(nothingLost); }
 
     // Finds the delete that actually removed something inside a group.
     //
@@ -342,6 +344,7 @@
     }
 
     function heldRefs(ev) { return Array.isArray(ev.held) ? ev.held : []; }
+    const UNKNOWN_HOLD = "destination-unknown";
 
     // Finds the event inside a group that actually withheld something.
     //
@@ -380,8 +383,8 @@
     }
 
     // What one overwritten ref lost, as detail lines. An empty list is only
-    // "nothing lost" when the ref is preserved, which never reaches here — so an
-    // unpreserved ref with no list says the check did not run instead of saying
+    // "nothing lost" when nothingLost says so, which never reaches here — so a
+    // red ref with no list says the check did not run instead of saying
     // nothing, which would read as the all-clear.
     function lostLines(f) {
       const lost = Array.isArray(f.lost) ? f.lost : [];
@@ -393,7 +396,8 @@
       const more = (f.lost_total || lost.length) - lost.length;
       return lost.map((c) => "\n  lost " + esc(String(c.sha || "").slice(0, 10)) + " "
           + esc(c.author) + ": " + esc(c.subject)).join("")
-        + (more > 0 ? "\n  … and " + more + " more" : "");
+        + (more > 0 ? "\n  … and " + more + " more" : "")
+        + (f.elsewhere > 0 ? "\n  " + f.elsewhere + " more left this branch but remain on other branches of the pushing side" : "");
     }
 
     function renderDetail(ev, id, g) {
@@ -432,9 +436,11 @@
       const kept = preservedRefs(ev);
       const rewrittenRow = kept.length
         ? "<dt>Rewritten</dt><dd class=\"rewritten\">"
-          + kept.map((f) => esc(f.ref) + "\n  was " + esc(f.old) + "\n  now " + esc(f.new)).join("\n")
-          + "\n\nEvery change only the old tip reached is present byte for byte in the"
-          + "\nnew history (a rebase or an amend). Commit messages are not compared."
+          + kept.map((f) => esc(f.ref) + "\n  was " + esc(f.old) + "\n  now " + esc(f.new)
+            + (f.elsewhere > 0 ? "\n  " + f.elsewhere + " commit(s) left this branch, still on other branches of the pushing side" : "")).join("\n")
+          + "\n\nEvery commit only the old tip reached is present byte for byte in the"
+          + "\nnew history (a rebase or an amend) or still on another branch of the pushing side."
+          + "\nCommit messages are not compared."
           + "</dd>"
         : "";
       // Same reasoning as the block above, for the operation that discards a
@@ -473,8 +479,15 @@
         ? "<dt>Withheld</dt><dd class=\"forced\">"
           + held.map((h) => esc(h.ref) + "\n  destination is at " + esc(h.dest)
             + "\n  reason: " + esc(h.reason)).join("\n")
-          + "\n\nNothing was written. An echo that arrived late settles by itself;"
-          + "\na rewind someone meant to make does not."
+          + "\n\nNothing was written."
+          + (held.some((h) => h.reason !== UNKNOWN_HOLD)
+            ? "\nAn echo that arrived late settles by itself; a rewind someone meant to make does not."
+            : "")
+          + (held.some((h) => h.reason === UNKNOWN_HOLD)
+            ? "\n" + UNKNOWN_HOLD + ": the destination holds a commit this side has never fetched,"
+              + "\neither a push still on its way, which settles by itself, or a rewrite made there."
+              + "\nOn a two-way mirror, check the reverse route first."
+            : "")
           + "</dd>"
         : "";
       // One button per withheld ref, because one force moves one ref. Offered
@@ -484,7 +497,8 @@
         ? '<div class="retry">'
           + held.map((h) => '<button class="danger" data-force="' + esc(hold.repo)
             + '" data-to="' + esc(hold.to || "") + '" data-ref="' + esc(h.ref)
-            + '" data-dest="' + esc(h.dest) + '">Apply rewind of ' + esc(h.ref) + '</button>').join(" ")
+            + '" data-dest="' + esc(h.dest) + '" data-reason="' + esc(h.reason || "") + '">'
+            + (h.reason === UNKNOWN_HOLD ? "Overwrite " : "Apply rewind of ") + esc(h.ref) + '</button>').join(" ")
           + '<span class="retrymsg" id="forcemsg-' + id + '"></span></div>'
         : "";
       const restoredRow = ev.restored_tip
@@ -536,7 +550,7 @@
         : "";
       const rewritten = rewrittenCount
         ? '<div class="rewrotewarn">' + rewrittenCount + " ref" + (rewrittenCount === 1 ? "" : "s")
-          + " rewritten — content preserved</div>"
+          + " rewritten — nothing lost</div>"
         : "";
       const rowClass = forcedCount ? " forced" : (rewrittenCount ? " rewritten" : "");
       return '<tr class="row' + (isLoop(g) ? " loop" : "") + rowClass + '" data-id="' + id + '">'
@@ -704,14 +718,20 @@
     // The server re-checks the hold against the history, so a press arriving
     // after the situation resolved is refused rather than acted on.
     async function runForce(btn) {
-      const { force: repo, to, ref, dest } = btn.dataset;
+      const { force: repo, to, ref, dest, reason } = btn.dataset;
       const msg = btn.parentElement.querySelector(".retrymsg");
-      const confirmed = window.confirm(
-        "Apply the withheld rewind of " + ref + " on " + to + "?\n\n" +
-        "repo: " + repo + "\n" +
-        "the destination is at: " + dest + "\n\n" +
-        "That commit will be discarded on " + to + ". Do this only if the rewind was deliberate —\n" +
-        "if this was a late echo, it has already resolved by itself and there is nothing to apply."
+      const confirmed = window.confirm(reason === UNKNOWN_HOLD
+        ? "Overwrite " + ref + " on " + to + "?\n\n" +
+          "repo: " + repo + "\n" +
+          "the destination is at: " + dest + "\n\n" +
+          "This side has never fetched that commit, and it will be discarded on " + to + ".\n" +
+          "If the branch was rewritten there on purpose, this undoes that correction:\n" +
+          "on a two-way mirror, check the reverse route first."
+        : "Apply the withheld rewind of " + ref + " on " + to + "?\n\n" +
+          "repo: " + repo + "\n" +
+          "the destination is at: " + dest + "\n\n" +
+          "That commit will be discarded on " + to + ". Do this only if the rewind was deliberate —\n" +
+          "if this was a late echo, it has already resolved by itself and there is nothing to apply."
       );
       if (!confirmed) { return; }
       btn.disabled = true;

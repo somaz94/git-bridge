@@ -336,7 +336,7 @@ disk I/O.
 | `action` | `mirror` (branch/tag sync), `delete` (ref delete propagation) or `restore` (a console click re-creating a ref a delete removed). A restore is its own action rather than a mirror because nothing upstream asked for it — a person did |
 | `source` | What triggered the sync: `webhook`, `sqs`, `cron` (the reconcile CronJob), `retry-api` (a hand-run call), or `console` |
 | `result` | `ok`, `skip`, or `fail`. Failures also carry `err` |
-| `reason` | Narrows `result`. Skips are `already-up-to-date`, `ref-override`, `no-refs-to-push` or `already-absent`; failures name the step that failed; a success can carry `forced-update`, meaning the push worked but overwrote a ref non-fast-forward and may have lost commits, or `rewritten`, meaning every overwritten ref was checked and each discarded commit's change is present byte for byte in the new history (`git patch-id --verbatim`; messages are not compared). Each `forced` entry carries `preserved`; an unpreserved one lists the commits without an equivalent in `lost` (`sha`, `author`, `subject`, capped) and the full count in `lost_total`. A refused restore is `ref-exists` (the ref came back on the destination) or `object-gone` (git collected the commit); `create-ref` is a restore that failed at the push itself |
+| `reason` | Narrows `result`. Skips are `already-up-to-date`, `ref-override`, `no-refs-to-push` or `already-absent`; failures name the step that failed; a success can carry `forced-update`, meaning the push worked but overwrote a ref non-fast-forward and may have lost commits, or `rewritten`, meaning every overwritten ref was checked and nothing is gone: each discarded commit's change is present byte for byte in the new history (`git patch-id --verbatim`; messages are not compared), or the commit is still on another branch of the pushing side. Each `forced` entry carries `preserved`; an unpreserved one lists the commits no branch reaches any more in `lost` (`sha`, `author`, `subject`, capped), the full count in `lost_total`, and the commits still on another branch in `elsewhere`. `preserved` stays false when only `elsewhere` is set, because those commits are no longer in the new history. A refused restore is `ref-exists` (the ref came back on the destination) or `object-gone` (git collected the commit); `create-ref` is a restore that failed at the push itself |
 | `deleted_tip` | Only on a `delete` that actually removed something: the SHA the ref pointed at, read just before the delete ran. Absent otherwise, including a delete that found the ref already gone. A delete leaves nothing behind to look up — afterwards the destination names neither the ref nor the commit — so this is the only record of what was discarded |
 | `restored_tip` | Only on a `restore` that actually re-created the ref: the SHA it was put back at. The counterpart to `deleted_tip` — the two events together tell the whole story of a ref that went away and came back, without correlating them by timestamp |
 | `actor` | Who a console-driven action is attributed to, read from the portal's `X-Auth-User` header. Set only for actions a person triggers, because those are the only ones with a person behind them — a webhook or an SQS event has a pusher, not an operator |
@@ -573,7 +573,7 @@ Unknown fields are rejected rather than ignored.
 
 | Status Code | Description |
 |-------------|-------------|
-| 202 | Accepted; the sync runs in the background and its outcome appears in the history as a `forced-update` |
+| 202 | Accepted; the sync runs in the background and its outcome appears in the history as a `forced-update`, or as `rewritten` when nothing was lost |
 | 400 | Missing `repo` / `to` / `ref`, an unknown field, or invalid JSON |
 | 404 | Force not wired up (no mirror service). `/console/api/me` reports this as `force_enabled: false` so the page hides the button |
 | 405 | Method not allowed (only POST) |
@@ -585,7 +585,7 @@ Unknown fields are rejected rather than ignored.
 ref onto either side" API reachable by anyone who can reach the console. With
 it, the button can only finish something the mirror already declined and wrote
 down. The check reads the same bounded tail the page renders, so a hold old
-enough to have aged out is no longer clickable — the command in the Slack alert
+enough to have aged out is no longer clickable — the retry API
 still works, and reaching further back than the console shows should be a
 deliberate act rather than a click.
 

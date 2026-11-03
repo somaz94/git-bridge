@@ -233,19 +233,20 @@ func (m *mockGitRunner) RemoteRefs(ctx context.Context, rem provider.Remote) (ma
 
 // mockUnmatched is one configured UnmatchedCommits answer.
 type mockUnmatched struct {
-	lost  []history.LostCommit
-	total int
-	err   error
+	lost      []history.LostCommit
+	total     int
+	elsewhere int
+	err       error
 }
 
-func (m *mockGitRunner) UnmatchedCommits(_ context.Context, _, kept, discarded string) ([]history.LostCommit, int, error) {
+func (m *mockGitRunner) UnmatchedCommits(_ context.Context, _, kept, discarded string) (UnmatchedReport, error) {
 	key := kept + "..." + discarded
 	m.unmatchedCalls = append(m.unmatchedCalls, key)
 	r, ok := m.unmatched[key]
 	if !ok {
-		return nil, 0, errors.New("mock: UnmatchedCommits not configured for " + key)
+		return UnmatchedReport{}, errors.New("mock: UnmatchedCommits not configured for " + key)
 	}
-	return r.lost, r.total, r.err
+	return UnmatchedReport{Lost: r.lost, Total: r.total, Elsewhere: r.elsewhere}, r.err
 }
 
 func (m *mockGitRunner) IsAncestor(_ context.Context, _, ancestor, descendant string) bool {

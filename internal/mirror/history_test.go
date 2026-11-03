@@ -712,15 +712,15 @@ func TestForcedUpdate_OverwrittenBranchAlerts(t *testing.T) {
 
 	var alert *notify.Message
 	for i := range notif.messages {
-		if strings.HasPrefix(notif.messages[i].Title, "Forced Update:") {
+		if strings.HasPrefix(notif.messages[i].Title, "Commits Overwritten:") {
 			alert = &notif.messages[i]
 		}
 	}
 	if alert == nil {
 		t.Fatalf("no forced-update alert sent; got %+v", notif.messages)
 	}
-	if alert.Level != "error" {
-		t.Errorf("Level = %q, want error", alert.Level)
+	if alert.Level != "data-loss" {
+		t.Errorf("Level = %q, want data-loss", alert.Level)
 	}
 	// The old tip is the only recoverable pointer to the discarded commits, so
 	// an alert without it is not actionable.
@@ -749,7 +749,7 @@ func TestForcedUpdate_OverwrittenTagIsRecordedButDoesNotAlert(t *testing.T) {
 		t.Errorf("tag rewrite must still be recorded, got reason=%q forced=%+v", ev.Reason, ev.Forced)
 	}
 	for _, msg := range notif.messages {
-		if strings.HasPrefix(msg.Title, "Forced Update:") {
+		if strings.HasPrefix(msg.Title, "Commits Overwritten:") {
 			t.Errorf("a tag rewrite must not alert, got %+v", msg)
 		}
 	}
@@ -776,7 +776,7 @@ func TestForcedUpdate_BranchAlertsEvenWhenMixedWithTags(t *testing.T) {
 	}
 	var alerted bool
 	for _, msg := range notif.messages {
-		if strings.HasPrefix(msg.Title, "Forced Update:") {
+		if strings.HasPrefix(msg.Title, "Commits Overwritten:") {
 			alerted = true
 			if strings.Contains(msg.Body, "refs/tags/build-1") {
 				t.Errorf("the alert should name only the branch, got %q", msg.Body)
@@ -824,7 +824,7 @@ func TestForcedUpdate_BranchOverwriteReplacesTheSuccessMessage(t *testing.T) {
 		t.Fatalf("expected exactly one message, got %d: %+v", len(notif.messages), notif.messages)
 	}
 	msg := notif.messages[0]
-	if !strings.HasPrefix(msg.Title, "Forced Update:") {
+	if !strings.HasPrefix(msg.Title, "Commits Overwritten:") {
 		t.Errorf("the surviving message must be the alert, got %q", msg.Title)
 	}
 	// Everything the suppressed success message carried has to be here instead.

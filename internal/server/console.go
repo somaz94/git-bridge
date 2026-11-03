@@ -455,7 +455,7 @@ func matchingDeleteExists(reader history.Reader, repo, to, ref, sha string) bool
 //
 // Reading the same bounded tail the page renders (gateQuery) means a hold old
 // enough to have aged out is no longer clickable. That is intended — the
-// command in the Slack alert still works, and reaching further back than the
+// retry API still works, and reaching further back than the
 // console shows should be a deliberate act rather than a click.
 // The tip is part of the match, not just the ref. Without it a hold that is
 // still in the visible tail would authorise a force forever — including one

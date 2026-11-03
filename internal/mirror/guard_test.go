@@ -630,6 +630,146 @@ func TestReportHeld_AlertCarriesARunnableForceCommand(t *testing.T) {
 	}
 }
 
+// heldAlertBody runs one hold through reportHeld and returns the alert it sent.
+func heldAlertBody(t *testing.T, repo config.RepoConfig, held ...history.HeldRef) string {
+	t.Helper()
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, &mockGitRunner{})
+	svc.reportHeld(repo, EventMeta{}, heldReport{
+		route:        "a/x → b/x",
+		reverseRoute: "b/x → a/x",
+		dest:         "b/x",
+		repo:         repo.Name,
+		direction:    "source-to-target",
+		held:         held,
+	}, testLogger())
+	if len(notif.messages) != 1 {
+		t.Fatalf("want one alert, got %+v", notif.messages)
+	}
+	return notif.messages[0].Body
+}
+
+// The 2026-11-02 incident: main was rewritten on purpose, old refused it, and
+// the alert on the other leg handed over a command that would have undone the
+// correction. A hold the reverse leg can resolve points there and prints nothing
+// to copy.
+func TestReportHeld_UnknownTipWithAReverseRouteOffersNoCommand(t *testing.T) {
+	body := heldAlertBody(t, config.RepoConfig{Name: "r", Direction: "bidirectional"},
+		history.HeldRef{Ref: incidentRef, Reason: holdDestinationUnknown, Dest: incidentLostTip})
+
+	if strings.Contains(body, "/retry/mirror") || strings.Contains(body, `"force":true`) {
+		t.Errorf("no force command may be offered here:\n%s", body)
+	}
+	if strings.Contains(body, "already holds") {
+		t.Errorf("an unknown tip must not be described as known:\n%s", body)
+	}
+	for _, want := range []string{incidentLostTip, "b/x → a/x", "never fetched", "settles on its own", "rewrite made there"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("alert is missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// Both sides took different commits, so each leg holds the other's tip as unknown
+// and each alert would otherwise only point at the other.
+func TestReportHeld_UnknownTipNamesTheWayOutOfAMutualHold(t *testing.T) {
+	body := heldAlertBody(t, config.RepoConfig{Name: "r", Direction: "bidirectional"},
+		history.HeldRef{Ref: incidentRef, Reason: holdDestinationUnknown, Dest: incidentLostTip})
+	for _, want := range []string{"withheld too", "diverged", "retry API"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("alert is missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// One reconcile can hold a ref the reverse leg carries and one pinned to this leg.
+// The two get opposite advice, so each paragraph has to say which ref it means.
+func TestReportHeld_UnknownTipsWithDifferentRoutesAreNamedPerParagraph(t *testing.T) {
+	const pinnedRef = "refs/heads/release"
+	body := heldAlertBody(t, config.RepoConfig{Name: "r", Direction: "bidirectional", RefOverrides: []config.RefOverride{
+		{Pattern: "release", From: "a", To: "b"},
+	}},
+		history.HeldRef{Ref: incidentRef, Reason: holdDestinationUnknown, Dest: incidentLostTip},
+		history.HeldRef{Ref: pinnedRef, Reason: holdDestinationUnknown, Dest: "9999999999999999999999999999999999999999"})
+
+	for _, want := range []string{"For " + incidentRef + ":", "For " + pinnedRef + ":", `"ref":"` + pinnedRef + `"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("alert is missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `"ref":"`+incidentRef+`"`) {
+		t.Errorf("the ref the reverse leg carries must get no command:\n%s", body)
+	}
+}
+
+// The reverse route is built in doMirror, so a helper passing a literal would not
+// notice it pointing the wrong way.
+func TestReportHeld_NamesTheReverseOfTheHeldRoute(t *testing.T) {
+	git := &mockGitRunner{
+		pushChanged:   true,
+		listRefs:      []string{incidentRef},
+		localTips:     map[string]string{incidentRef: incidentEchoTip},
+		remoteTips:    map[string]string{incidentRef: incidentLostTip},
+		objectMissing: true,
+	}
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	if err := svc.Sync(context.Background(), "bidi-repo", EventMeta{Ref: incidentRef}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	const want = "gitlab-main/team/bidi-repo → codecommit-eu/bidi-repo normally carries it"
+	if len(notif.messages) != 1 || !strings.Contains(notif.messages[0].Body, want) {
+		t.Errorf("want %q in the alert, got %+v", want, notif.messages)
+	}
+}
+
+// With no reverse leg nothing else can resolve the hold, so force stays the
+// documented way out: a one-way repo, or a ref pinned to this leg.
+func TestReportHeld_UnknownTipWithNoReverseRouteKeepsTheCommand(t *testing.T) {
+	cases := map[string]config.RepoConfig{
+		"one-way":          {Name: "r", Direction: "source-to-target"},
+		"one-way reversed": {Name: "r", Direction: "target-to-source"},
+		"pinned": {Name: "r", Direction: "bidirectional", RefOverrides: []config.RefOverride{
+			{Pattern: strings.TrimPrefix(incidentRef, refsHeadsPrefix), From: "a", To: "b"},
+		}},
+	}
+	for name, repo := range cases {
+		t.Run(name, func(t *testing.T) {
+			body := heldAlertBody(t, repo,
+				history.HeldRef{Ref: incidentRef, Reason: holdDestinationUnknown, Dest: incidentLostTip})
+			if !strings.Contains(body, "/retry/mirror") {
+				t.Errorf("the force command is the only way out here:\n%s", body)
+			}
+			if !strings.Contains(body, "no reverse route") {
+				t.Errorf("alert must say why force is offered:\n%s", body)
+			}
+		})
+	}
+}
+
+// One reconcile can hold refs for both reasons, and each keeps its own guidance:
+// only the rewind's command is printed.
+func TestReportHeld_MixedHoldsOfferACommandOnlyForTheRewind(t *testing.T) {
+	const unknownRef = "refs/heads/other"
+	const unknownTip = "9999999999999999999999999999999999999999"
+	body := heldAlertBody(t, config.RepoConfig{Name: "r", Direction: "bidirectional"},
+		history.HeldRef{Ref: incidentRef, Reason: holdDestinationAhead, Dest: incidentLostTip},
+		history.HeldRef{Ref: unknownRef, Reason: holdDestinationUnknown, Dest: unknownTip})
+
+	if !strings.Contains(body, `"ref":"`+incidentRef+`"`) {
+		t.Errorf("the rewind keeps its command:\n%s", body)
+	}
+	if strings.Contains(body, `"ref":"`+unknownRef+`"`) || strings.Contains(body, `"dest":"`+unknownTip+`"`) {
+		t.Errorf("the unknown tip must get no command:\n%s", body)
+	}
+	for _, want := range []string{"already holds", "never fetched"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("alert is missing %q:\n%s", want, body)
+		}
+	}
+}
+
 // The direction words point at the config's source and target, not at the two
 // providers, so the leg that reads as "gitlab to codecommit" is target-to-source
 // on a CodeCommit-sourced repo. Getting this backwards hands over a command

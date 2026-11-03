@@ -16,9 +16,10 @@ const httpTimeout = 10 * time.Second
 // levelPrefix maps each notification level to its prefix emoji. A level that is
 // not in the map is treated as success (✅).
 var levelPrefix = map[string]string{
-	"success": "✅",
-	"error":   "❌",
-	"warning": "⚠️",
+	"success":   "✅",
+	"error":     "❌",
+	"warning":   "⚠️",
+	"data-loss": "🚨",
 }
 
 // levelColor maps each level to its attachment color bar. A level that is not in
@@ -28,10 +29,15 @@ var levelPrefix = map[string]string{
 // The color bar is seen first, on the left edge, before the body is read, so a
 // failure mixed in among normal syncs can be found by skimming. The values are
 // the same colors as Slack's good/warning/danger.
+//
+// data-loss is its own level because a push that discarded commits succeeded:
+// under error's ❌ and red it read as a failed sync, and under warning it would
+// look the same as Push Withheld, which wrote nothing.
 var levelColor = map[string]string{
-	"success": "#2eb886",
-	"error":   "#a30200",
-	"warning": "#daa038",
+	"success":   "#2eb886",
+	"error":     "#a30200",
+	"warning":   "#daa038",
+	"data-loss": "#e8590c",
 }
 
 // slackPayload is the JSON body sent to the Slack webhook.
@@ -66,7 +72,7 @@ type slackAttachment struct {
 // for per-repo Slack channel routing (e.g. git-bridge-test → TEST channel,
 // other repos → prod channel).
 type Message struct {
-	Level      string // success, error, warning
+	Level      string // success, error, warning, data-loss
 	Title      string
 	Body       string
 	WebhookURL string // optional override; empty means the notifier's default is used

@@ -111,8 +111,8 @@ Git-Bridge sends notifications in the following cases:
 | Ref delete failure | `Ref Delete Failed` | `error` (❌) | Failed to delete ref |
 | Ref restore success | `Ref Restored` | `success` (✅) | A console click put back a ref a delete removed, at the tip that delete recorded. The body carries `Restored tip: <sha>` and `Restored by: <actor>`. The actor is on it because this writes to a real repository — unlike a webhook or SQS event, which has a pusher rather than an operator, someone chose to do this and the channel is where that becomes visible |
 | Ref restore failure | `Ref Restore Failed` | `error` (❌) | The restore was refused or failed. The body carries `Requested by: <actor>` and `Error: <what>`. All three exits send the same shape — the ref already exists on the destination, git has garbage-collected the commit, or the push failed — so a refusal is as legible in the channel as a success. A refusal is the expected outcome when someone re-created the branch in the meantime, not an incident |
-| Push withheld | `Push Withheld` | `warning` (⚠️) | The push guard withheld at least one **branch** because the destination already holds what this side would have pushed, so writing would have discarded commits there. Nothing was written. The body carries `Route:`, `Target:` and a `Withheld refs:` list (`<ref>: destination is at <sha> (<reason>)`), followed by one ready-to-run `curl … /retry/mirror` force command per held branch — the counterpart of the console's per-ref force button. A late echo settles on its own; a rewind someone meant to make does not, which is what this alert is for. Source: `reportHeld()` in [internal/mirror/mirror.go](../internal/mirror/mirror.go) |
-| Forced overwrite | `Forced Update` | `error` (❌) | The push succeeded, but at least one **branch** was overwritten non-fast-forward and may have lost commits. The body lists each such ref as `<ref>: <old> → <new>`, followed by `lost <sha> <author>: <subject>` for each commit whose change is not present byte for byte in the new history (capped, with `… and N more`), plus a `git fetch <clone-url> <old>` recovery line per branch. A branch rewritten in the same push without losing anything is named under `Also rewritten in this push`. It **replaces** the success notification for that push, rather than arriving alongside it — the two together would read as a contradiction — which is why it carries route, duration and target itself |
+| Push withheld | `Push Withheld` | `warning` (⚠️) | The push guard withheld at least one **branch** because writing would have discarded commits at the destination. Nothing was written. The body carries `Route:`, `Target:` and a `Withheld refs:` list (`<ref>: destination is at <sha> (<reason>)`), then guidance per reason. `destination-ahead` means the destination already holds what this side would have pushed: a late echo settles on its own, a rewind someone meant to make does not, and each such branch gets a ready-to-run `curl … /retry/mirror` force command, the counterpart of the console's per-ref force button. `destination-unknown` means the destination holds a commit this side has never fetched: either a push still on its way here, which settles on its own, or a correction made on that side. Forcing would discard it, so when the reverse route can carry it the alert points there and prints no command, leaving the console button and the retry API as the deliberate ways to overwrite, which is also the way out when both routes hold the ref because the two sides diverged. A one-way repo, or a ref a `ref_override` pins to this leg, has no reverse route and keeps the command. Source: `reportHeld()` in [internal/mirror/mirror.go](../internal/mirror/mirror.go) |
+| Forced overwrite | `Commits Overwritten` | `data-loss` (🚨) | The push succeeded, but at least one **branch** was overwritten non-fast-forward and may have lost commits. The body opens with what was lost, because Slack folds a long message: each such ref as `<ref>: <old> → <new>`, followed by `lost <sha> <author>: <subject>` for each commit no branch reaches any more and whose change is not present byte for byte in the new history (capped, with `… and N more`), a count of the commits that left this branch but remain on other branches of the pushing side, then a line saying the sync itself succeeded, route, duration and target, and a `git fetch <clone-url> <old>` recovery line per branch. A branch rewritten in the same push without losing anything is named under `Also rewritten in this push`. It **replaces** the success notification for that push, rather than arriving alongside it — the two together would read as a contradiction — which is why it carries route, duration and target itself |
 
 > No notification is sent when the push is already up-to-date (loop detection).
 >
@@ -123,18 +123,25 @@ Git-Bridge sends notifications in the following cases:
 > The same reasoning covers a branch that was **rewritten without losing anything**
 > — a rebase or an amend, where every discarded commit's change is present byte
 > for byte in the new history (`git patch-id --verbatim`). No alert is sent; the ordinary `Mirror Sync` message carries a
-> `Rewritten: <ref> (content preserved)` line instead. The check errs toward the
-> alert: a merge commit, a rebase that resolved a conflict, a whitespace-only
-> difference, or a check that fails to run all still raise `Forced Update`.
+> `Rewritten: <ref> (content preserved)` line instead. A branch whose discarded
+> commits all remain on other branches of the pushing side is treated the same way,
+> with a line naming how many left it. That is judged when the overwrite happens: the
+> branch may not exist at the destination, and deleting it later raises no such alert.
+> For a commit no other branch reaches, the check errs toward the alert: a merge
+> commit, a rebase that resolved a conflict, a whitespace-only difference, or a check
+> that fails to run all still raise `Commits Overwritten`. A tag does not count as
+> keeping a commit, because a reused build tag can be re-pointed at any moment.
 >
 > `warning` (⚠️) is emitted by `Push Withheld`, and the forced-overwrite alert is
-> `error` — so neither is filtered out of a channel watching only failures. Note that
-> a filter narrowed to `error` alone WOULD drop `Push Withheld`, which is the one
-> alert asking an operator to decide whether a rewind should go through.
+> `data-loss` (🚨), not `error`: the push succeeded, and under ❌ it read as a failed
+> sync. It also stays apart from `warning`, which marks an alert that wrote nothing.
+> A filter narrowed to `error` alone therefore drops both — the commit-loss alert and
+> `Push Withheld`, the one alert asking an operator to decide whether a rewind
+> should go through.
 >
 > Every message is sent as a Slack **attachment** with a colour bar keyed to the
-> level: `success` green (`#2eb886`), `warning` amber (`#daa038`), `error` red
-> (`#a30200`); an unknown level falls back to green, matching the ✅ prefix.
+> level: `success` green (`#2eb886`), `warning` amber (`#daa038`), `data-loss`
+> orange (`#e8590c`), `error` red (`#a30200`); an unknown level falls back to green, matching the ✅ prefix.
 > The colour is the point of using an attachment — Block Kit has no colour, and
 > the emoji alone does not carry far enough when scrolling a channel of routine
 > green syncs. Because the body lives inside the attachment, the top-level

@@ -257,6 +257,7 @@ func TestSlack_Send_LevelPicksTheColour(t *testing.T) {
 		{"success", "#2eb886"},
 		{"error", "#a30200"},
 		{"warning", "#daa038"},
+		{"data-loss", "#e8590c"},
 		{"bogus", "#2eb886"}, // unknown falls back to success, matching the ✅ prefix
 	} {
 		t.Run(tc.level, func(t *testing.T) {
@@ -310,11 +311,11 @@ func TestSlack_Send_FallbackIsTitleOnly(t *testing.T) {
 	defer server.Close()
 
 	NewSlack(config.SlackConfig{WebhookURL: server.URL}).Send(Message{
-		Level: "error", Title: "Forced Update: repo", Body: "Deleted tip: deadbeef\nUndo: git fetch ...",
+		Level: "data-loss", Title: "Commits Overwritten: repo", Body: "Deleted tip: deadbeef\nUndo: git fetch ...",
 	})
 
 	fallback := attachmentField(t, received, "fallback")
-	if !strings.Contains(fallback, "Forced Update: repo") {
+	if !strings.Contains(fallback, "Commits Overwritten: repo") {
 		t.Errorf("fallback = %q, want it to name the event", fallback)
 	}
 	if strings.Contains(fallback, "deadbeef") {

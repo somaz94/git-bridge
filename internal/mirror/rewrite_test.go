@@ -79,14 +79,14 @@ func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 
 func (r *rewriteRepo) unmatched(kept, discarded string) ([]history.LostCommit, int) {
 	r.t.Helper()
-	lost, total, err := (&defaultGitRunner{}).UnmatchedCommits(context.Background(), r.dir, kept, discarded)
+	rep, err := (&defaultGitRunner{}).UnmatchedCommits(context.Background(), r.dir, kept, discarded)
 	if err != nil {
 		r.t.Fatalf("UnmatchedCommits(%s, %s) error = %v", kept, discarded, err)
 	}
-	if len(lost) > total {
-		r.t.Fatalf("listed %d commits but counted %d", len(lost), total)
+	if len(rep.Lost) > rep.Total {
+		r.t.Fatalf("listed %d commits but counted %d", len(rep.Lost), rep.Total)
 	}
-	return lost, total
+	return rep.Lost, rep.Total
 }
 
 // A rebase onto a newer base re-creates every commit under a new SHA with the
@@ -171,10 +171,116 @@ func TestUnmatchedCommits_MergeCommitIsNeverMatched(t *testing.T) {
 	r.git("checkout", "-q", "-b", "rebased", "HEAD~1")
 	r.git("rebase", "-q", "main")
 	rebased := strings.TrimSpace(r.git("rev-parse", "HEAD"))
+	r.git("branch", "-q", "-D", "feature")
 
 	lost, total := r.unmatched(rebased, merged)
 	if total != 1 || len(lost) != 1 || lost[0].SHA != merged {
 		t.Errorf("lost = %+v (total %d), want only the merge commit", lost, total)
+	}
+}
+
+// The 2026-11-02 shape: a dev merge landed on master and was force-pushed away.
+// Most of what left master is still on dev, so only the merge and the work that
+// lived on master alone are lost.
+func TestUnmatchedCommits_CommitsStillOnAnotherBranchAreNotLost(t *testing.T) {
+	r := newRewriteRepo(t)
+	base := strings.TrimSpace(r.git("rev-parse", "HEAD"))
+	r.git("checkout", "-q", "-b", "dev")
+	r.commit("dev1.txt", "1", "dev one")
+	r.commit("dev2.txt", "2", "dev two")
+	r.git("checkout", "-q", "main")
+	r.git("merge", "-q", "--no-ff", "--no-edit", "dev")
+	merge := strings.TrimSpace(r.git("rev-parse", "HEAD"))
+	old := r.commit("only.txt", "x", "only on main")
+	r.git("reset", "-q", "--hard", base)
+	replacement := r.commit("new.txt", "n", "replacement")
+
+	rep, err := (&defaultGitRunner{}).UnmatchedCommits(context.Background(), r.dir, replacement, old)
+	if err != nil {
+		t.Fatalf("UnmatchedCommits error = %v", err)
+	}
+	if rep.Total != 2 || rep.Elsewhere != 2 {
+		t.Fatalf("report = %+v, want 2 lost and 2 elsewhere", rep)
+	}
+	if rep.Lost[0].SHA != old || rep.Lost[1].SHA != merge {
+		t.Errorf("lost = %+v, want the main-only commit then the merge", rep.Lost)
+	}
+}
+
+// The bug that started this: commits still on dev filled the capped list, so what
+// was actually gone never appeared in the alert.
+func TestUnmatchedCommits_CommitsElsewhereDoNotCrowdTheCappedList(t *testing.T) {
+	r := newRewriteRepo(t)
+	base := strings.TrimSpace(r.git("rev-parse", "HEAD"))
+	r.git("checkout", "-q", "-b", "dev")
+	for i := range history.MaxLostCommits + 3 {
+		r.commit(fmt.Sprintf("dev%d.txt", i), "x", fmt.Sprintf("dev %d", i))
+	}
+	r.git("checkout", "-q", "main")
+	gone := r.commit("gone.txt", "g", "gone")
+	r.git("merge", "-q", "--no-ff", "--no-edit", "dev")
+	old := strings.TrimSpace(r.git("rev-parse", "HEAD"))
+	r.git("reset", "-q", "--hard", base)
+	replacement := r.commit("new.txt", "n", "replacement")
+
+	rep, err := (&defaultGitRunner{}).UnmatchedCommits(context.Background(), r.dir, replacement, old)
+	if err != nil {
+		t.Fatalf("UnmatchedCommits error = %v", err)
+	}
+	if rep.Total != 2 || rep.Elsewhere != history.MaxLostCommits+3 {
+		t.Fatalf("report = %+v, want the merge and one commit lost", rep)
+	}
+	if rep.Lost[0].SHA != old || rep.Lost[1].SHA != gone {
+		t.Errorf("lost = %+v, want the merge then the commit actually gone", rep.Lost)
+	}
+}
+
+// Against real git: everything that left the branch is on another one, so nothing
+// is lost. A branch deleted before the overwrite is judged no longer vouches.
+func TestUnmatchedCommits_ABranchOnlyCountsWhileItExists(t *testing.T) {
+	r := newRewriteRepo(t)
+	base := strings.TrimSpace(r.git("rev-parse", "HEAD"))
+	r.git("checkout", "-q", "-b", "dev")
+	old := r.commit("a.txt", "a", "on dev")
+	r.git("checkout", "-q", "main")
+	r.git("merge", "-q", "--ff-only", "dev")
+	r.git("reset", "-q", "--hard", base)
+	replacement := r.commit("b.txt", "b", "replacement")
+
+	rep, err := (&defaultGitRunner{}).UnmatchedCommits(context.Background(), r.dir, replacement, old)
+	if err != nil {
+		t.Fatalf("UnmatchedCommits error = %v", err)
+	}
+	if rep.Total != 0 || rep.Elsewhere != 1 {
+		t.Fatalf("with dev present, report = %+v, want 1 elsewhere", rep)
+	}
+
+	r.git("branch", "-q", "-D", "dev")
+	rep, err = (&defaultGitRunner{}).UnmatchedCommits(context.Background(), r.dir, replacement, old)
+	if err != nil {
+		t.Fatalf("UnmatchedCommits error = %v", err)
+	}
+	if rep.Total != 1 || rep.Elsewhere != 0 {
+		t.Errorf("with dev deleted, report = %+v, want the commit lost", rep)
+	}
+}
+
+// A commit a tag still reaches counts as lost: a reused build tag can be
+// re-pointed at any moment, so it promises nothing.
+func TestUnmatchedCommits_ATagDoesNotCountAsSurviving(t *testing.T) {
+	r := newRewriteRepo(t)
+	base := strings.TrimSpace(r.git("rev-parse", "HEAD"))
+	old := r.commit("a.txt", "a", "tagged only")
+	r.git("tag", "build-1", old)
+	r.git("reset", "-q", "--hard", base)
+	replacement := r.commit("b.txt", "b", "replacement")
+
+	rep, err := (&defaultGitRunner{}).UnmatchedCommits(context.Background(), r.dir, replacement, old)
+	if err != nil {
+		t.Fatalf("UnmatchedCommits error = %v", err)
+	}
+	if rep.Total != 1 || rep.Elsewhere != 0 {
+		t.Errorf("report = %+v, want the tagged commit reported as lost", rep)
 	}
 }
 
@@ -279,7 +385,7 @@ func TestUnmatchedCommits_RefusesAComparisonPastTheLimit(t *testing.T) {
 	maxClassifyCommits = 2
 	t.Cleanup(func() { maxClassifyCommits = prev })
 
-	_, _, err := (&defaultGitRunner{}).UnmatchedCommits(context.Background(), r.dir, replaced, old)
+	_, err := (&defaultGitRunner{}).UnmatchedCommits(context.Background(), r.dir, replaced, old)
 	if err == nil || !strings.Contains(err.Error(), "more than the 2") {
 		t.Errorf("err = %v, want a refusal naming the limit", err)
 	}
@@ -349,7 +455,7 @@ func TestUnmatchedCommits_SubjectWithSeparatorLikeCharactersSurvives(t *testing.
 func TestUnmatchedCommits_MissingTipIsAnError(t *testing.T) {
 	r := newRewriteRepo(t)
 	head := strings.TrimSpace(r.git("rev-parse", "HEAD"))
-	_, _, err := (&defaultGitRunner{}).UnmatchedCommits(context.Background(), r.dir, head, rewriteOld)
+	_, err := (&defaultGitRunner{}).UnmatchedCommits(context.Background(), r.dir, head, rewriteOld)
 	if err == nil {
 		t.Fatal("expected an error for a tip that is not present")
 	}
@@ -418,7 +524,7 @@ func rewriteGit(unmatched mockUnmatched, forced ...history.ForcedRef) *mockGitRu
 
 func forcedAlert(msgs []notify.Message) *notify.Message {
 	for i := range msgs {
-		if strings.HasPrefix(msgs[i].Title, "Forced Update:") {
+		if strings.HasPrefix(msgs[i].Title, "Commits Overwritten:") {
 			return &msgs[i]
 		}
 	}
@@ -572,6 +678,76 @@ func TestForcedUpdate_MixedPushAlertsOnTheLossAndNamesTheRewrite(t *testing.T) {
 	}
 	if strings.Contains(alert.Body, "git fetch <clone-url> "+rewriteOld) {
 		t.Errorf("a preserved rewrite needs no recovery command:\n%s", alert.Body)
+	}
+	assertOutcome(t, rec.only(t), history.ActionMirror, history.ResultOK, history.ReasonForcedUpdate)
+}
+
+// Everything that left the branch is still on another one, so nothing is gone
+// and the data-loss alert must stay quiet, leaving one line in the success message.
+func TestForcedUpdate_CommitsAllOnOtherBranchesDoNotAlert(t *testing.T) {
+	git := rewriteGit(mockUnmatched{elsewhere: 3}, history.ForcedRef{Ref: rewriteRef, Old: rewriteOld, New: rewriteNew})
+	notif := &mockNotifier{}
+	svc, rec := newRecordingService(defaultRepos(), makeProviders(), notif, git)
+
+	if err := svc.Sync(context.Background(), "my-repo", EventMeta{}); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if alert := forcedAlert(notif.messages); alert != nil {
+		t.Fatalf("nothing was lost, so nothing may alert: %+v", alert)
+	}
+	if len(notif.messages) != 1 || !strings.Contains(notif.messages[0].Body, "3 commit(s) left this branch, still on other branches") {
+		t.Errorf("success message must name the rewrite, got %+v", notif.messages)
+	}
+	ev := rec.only(t)
+	assertOutcome(t, ev, history.ActionMirror, history.ResultOK, history.ReasonRewritten)
+	// Those commits are not in the new history, so Preserved must not claim it.
+	if ev.Forced[0].Preserved || ev.Forced[0].Elsewhere != 3 {
+		t.Errorf("forced = %+v, want unpreserved with 3 elsewhere", ev.Forced[0])
+	}
+}
+
+// Slack folds a long message, so what was lost has to come before everything else.
+func TestForcedUpdate_AlertOpensWithWhatWasLost(t *testing.T) {
+	lost := []history.LostCommit{{SHA: rewriteOld, Author: "a", Subject: "gone"}}
+	git := rewriteGit(mockUnmatched{lost: lost, total: 1}, history.ForcedRef{Ref: rewriteRef, Old: rewriteOld, New: rewriteNew})
+	notif := &mockNotifier{}
+	svc := newTestService(defaultRepos(), makeProviders(), notif, git)
+
+	if err := svc.Sync(context.Background(), "my-repo", EventMeta{}); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	alert := forcedAlert(notif.messages)
+	if alert == nil {
+		t.Fatalf("a real loss must alert, got %+v", notif.messages)
+	}
+	if !strings.HasPrefix(alert.Body, "Overwritten refs:") {
+		t.Errorf("alert must open with the overwritten refs:\n%s", alert.Body)
+	}
+	if strings.Index(alert.Body, "lost ") > strings.Index(alert.Body, "Route:") {
+		t.Errorf("the lost commits must come before the route:\n%s", alert.Body)
+	}
+}
+
+// A real loss alongside commits that merely moved: the alert lists only the loss
+// and counts the rest, so the commits actually gone are not buried.
+func TestForcedUpdate_AlertSeparatesTheLossFromCommitsOnOtherBranches(t *testing.T) {
+	lost := []history.LostCommit{{SHA: rewriteOld, Author: "a", Subject: "gone"}}
+	git := rewriteGit(mockUnmatched{lost: lost, total: 1, elsewhere: 29},
+		history.ForcedRef{Ref: rewriteRef, Old: rewriteOld, New: rewriteNew})
+	notif := &mockNotifier{}
+	svc, rec := newRecordingService(defaultRepos(), makeProviders(), notif, git)
+
+	if err := svc.Sync(context.Background(), "my-repo", EventMeta{}); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	alert := forcedAlert(notif.messages)
+	if alert == nil {
+		t.Fatalf("a real loss must alert, got %+v", notif.messages)
+	}
+	for _, want := range []string{"gone", "29 more left this branch but remain on other branches"} {
+		if !strings.Contains(alert.Body, want) {
+			t.Errorf("alert is missing %q:\n%s", want, alert.Body)
+		}
 	}
 	assertOutcome(t, rec.only(t), history.ActionMirror, history.ResultOK, history.ReasonForcedUpdate)
 }

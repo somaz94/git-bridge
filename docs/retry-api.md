@@ -100,11 +100,13 @@ Three limits keep the bypass narrow:
 
 - **One force, one ref.** A force with no `ref` is rejected — otherwise a single call would carry the bypass across every ref in the repository.
 - **No automatic path can set it.** Webhook and SQS syncs never construct it, and `source: cron` is refused, so the hourly reconcile cannot carry a bypass over every repository unattended.
-- **It is loud.** The bypass logs at WARN with the actor, and the resulting overwrite still raises the usual forced-update alert naming the discarded tip.
+- **It is loud.** The bypass logs at WARN with the actor, and an overwrite that loses commits still raises the usual forced-update alert naming the discarded tip. One that loses nothing is named in the success message instead.
 
 A withheld push records `skip` / `destination-ahead` in the history, and a withheld **branch** also raises a `Push Withheld` Slack alert. Tags stay quiet, the same way an overwritten tag does — a pipeline that reuses build tag names re-points them constantly, and an alert that fires on routine traffic is one people learn to ignore.
 
 **The alert carries the command.** It arrives with the repository, direction and ref already filled in, one call per withheld ref, so applying a rewind is a copy rather than a reconstruction. Only two values stay as placeholders: `<git-bridge-url>`, which the process does not know, and `$RETRY_API_TOKEN`, which it must never print into a channel.
+
+**The exception is `destination-unknown`.** It means the destination holds a commit this side has never fetched: either a push still on its way here, which settles on its own, or a correction made on that side. Forcing here would discard it. When a reverse route exists, the alert points there and carries no command. To overwrite the commit anyway, use the console button or call this API directly. A one-way repo, or a ref a `ref_override` pins to this leg, has no reverse route and still gets the command.
 
 ### 4-1. `direction` resolution
 
