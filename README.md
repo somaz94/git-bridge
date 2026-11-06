@@ -580,6 +580,12 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 <br/>
 
+## Related projects
+
+- [multi-git-mirror](https://github.com/somaz94/multi-git-mirror): A GitHub Action that mirrors a repository to several Git providers in one step.
+
+<br/>
+
 ## Contributors
 
 Thanks to all contributors:
