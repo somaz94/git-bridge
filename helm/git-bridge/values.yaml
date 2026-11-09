@@ -127,6 +127,7 @@ secret:
   #   SQS_EU_SECRET_KEY: "..."
   #   WEBHOOK_GITLAB_SECRET: "..."
   #   WEBHOOK_GITHUB_SECRET: "..."
+  #   RETRY_API_TOKEN: "..."   # required by the /retry/mirror API and reconcile
   #   SLACK_WEBHOOK_URL: "..."
 
 # Extra environment variables
@@ -204,6 +205,29 @@ extraVolumeMounts: []
 #   - name: extra-data
 #     mountPath: /extra
 #     readOnly: true
+
+# Scheduled reconcile: calls /retry/mirror for each repo in config.repos, in the
+# direction(s) it declares. A safety net for webhooks lost while the pod is replaced.
+# Needs RETRY_API_TOKEN in the Secret.
+reconcile:
+  enabled: false
+  schedule: "0 * * * *"
+  # IANA name, e.g. "Asia/Seoul"; empty uses the controller manager's time zone.
+  timeZone: ""
+  # Limit to these config.repos names; empty reconciles every repo.
+  repos: []
+  activeDeadlineSeconds: 300
+  image:
+    repository: alpine
+    tag: "3.23"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
 
 nodeSelector: {}
 tolerations: []

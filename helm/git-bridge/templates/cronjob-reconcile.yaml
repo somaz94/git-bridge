@@ -1,0 +1,104 @@
+{{- if .Values.reconcile.enabled }}
+{{- $calls := list }}
+{{- range .Values.config.repos }}
+{{- if or (empty $.Values.reconcile.repos) (has .name $.Values.reconcile.repos) }}
+{{- $dir := lower (default "" .direction) }}
+{{- if eq $dir "bidirectional" }}
+{{- $calls = append $calls (printf "%s:source-to-target" .name) }}
+{{- $calls = append $calls (printf "%s:target-to-source" .name) }}
+{{- else if $dir }}
+{{- $calls = append $calls (printf "%s:%s" .name $dir) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if not $calls }}
+{{- fail "reconcile.enabled needs at least one repo in config.repos (matching reconcile.repos when set)" }}
+{{- end }}
+{{- if and .Values.secret.create (not .Values.secret.existingSecret) (not (hasKey (default dict .Values.secret.data) "RETRY_API_TOKEN")) }}
+{{- fail "reconcile.enabled needs secret.data.RETRY_API_TOKEN (or secret.existingSecret holding it)" }}
+{{- end }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "git-bridge.fullname" . }}-reconcile
+  labels:
+    {{- include "git-bridge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reconcile
+spec:
+  schedule: {{ .Values.reconcile.schedule | quote }}
+  {{- with .Values.reconcile.timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: {{ .Values.reconcile.activeDeadlineSeconds }}
+      template:
+        metadata:
+          # Not the Service's selector labels, or it would route webhooks to this pod.
+          labels:
+            app.kubernetes.io/name: {{ include "git-bridge.name" . }}-reconcile
+            app.kubernetes.io/instance: {{ .Release.Name }}
+            app.kubernetes.io/component: reconcile
+        spec:
+          restartPolicy: Never
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: reconcile
+              image: "{{ .Values.reconcile.image.repository }}:{{ .Values.reconcile.image.tag }}"
+              imagePullPolicy: {{ .Values.reconcile.image.pullPolicy }}
+              env:
+                - name: RETRY_API_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "git-bridge.secretName" . }}
+                      key: RETRY_API_TOKEN
+                - name: ENDPOINT
+                  value: "http://{{ include "git-bridge.fullname" . }}:{{ .Values.service.port }}/retry/mirror"
+                - name: CALLS
+                  value: {{ join " " $calls | quote }}
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  # The API answers "accepted" at once and syncs in the server, so this only triggers.
+                  set -eu
+                  rc=0
+                  for call in $CALLS; do
+                    repo="${call%%:*}"; dir="${call#*:}"
+                    echo "[reconcile] POST repo=$repo direction=$dir"
+                    wget -q -O- --header="Authorization: Bearer ${RETRY_API_TOKEN}" \
+                      --header="Content-Type: application/json" \
+                      --post-data="{\"repo\":\"$repo\",\"direction\":\"$dir\",\"source\":\"cron\"}" \
+                      "$ENDPOINT" || { echo "  request failed: $repo/$dir"; rc=1; }
+                    echo ""
+                    sleep 5
+                  done
+                  echo "[reconcile] done (rc=$rc)"
+                  exit $rc
+              resources:
+                {{- toYaml .Values.reconcile.resources | nindent 16 }}
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 65534
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+{{- end }}

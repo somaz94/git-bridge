@@ -82,5 +82,29 @@ for f in "${CHART_DIR}"/examples/*.yaml; do
 done
 echo ""
 
-TOTAL=$((7 + $(ls "${CHART_DIR}"/examples/*.yaml 2>/dev/null | wc -l | tr -d ' ')))
+# 9. Reconcile CronJob: calls follow each repo's direction, and the guards fire
+echo "--- Template (reconcile CronJob) ---"
+REC_VALUES=(
+    --set reconcile.enabled=true
+    --set "secret.data.RETRY_API_TOKEN=test-token"
+    --set "config.repos[0].name=app-a" --set "config.repos[0].direction=bidirectional"
+    --set "config.repos[1].name=app-b" --set "config.repos[1].direction=source-to-target"
+)
+calls=$(helm template test-release "${CHART_DIR}" "${REC_VALUES[@]}" --show-only templates/cronjob-reconcile.yaml)
+expected='app-a:source-to-target app-a:target-to-source app-b:source-to-target'
+grep -q "value: \"${expected}\"" <<<"$calls" || { echo "  [FAIL] unexpected CALLS:"; grep -A1 'name: CALLS' <<<"$calls"; exit 1; }
+if grep -q 'app.kubernetes.io/name: git-bridge$' <<<"$(sed -n '/template:/,$p' <<<"$calls")"; then
+    echo "  [FAIL] reconcile pod carries the Service selector label"; exit 1
+fi
+if helm template test-release "${CHART_DIR}" --set reconcile.enabled=true --set "secret.data.RETRY_API_TOKEN=x" >/dev/null 2>&1; then
+    echo "  [FAIL] rendered without any repo to reconcile"; exit 1
+fi
+if helm template test-release "${CHART_DIR}" --set reconcile.enabled=true \
+    --set "config.repos[0].name=app-a" --set "config.repos[0].direction=bidirectional" >/dev/null 2>&1; then
+    echo "  [FAIL] rendered without RETRY_API_TOKEN"; exit 1
+fi
+echo "  [OK] Reconcile CronJob renders and guards fire"
+echo ""
+
+TOTAL=$((8 + $(ls "${CHART_DIR}"/examples/*.yaml 2>/dev/null | wc -l | tr -d ' ')))
 echo "==> All Helm chart tests passed! (${TOTAL} scenarios)"
