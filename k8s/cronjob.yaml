@@ -1,0 +1,85 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: git-bridge-reconcile
+  namespace: git-bridge
+  labels:
+    app: git-bridge
+spec:
+  # Hourly safety net for events that never reached the app: GitLab does not retry a
+  # webhook that arrives while the single pod is being replaced, and a proxy body limit
+  # can drop one before it is logged. Most calls finish as already up to date.
+  schedule: "0 * * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          # Not app: git-bridge, or the Service would route webhooks to this short-lived pod.
+          labels:
+            app: git-bridge-reconcile
+            job: reconcile
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: reconcile
+              image: alpine:3.23
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: RETRY_API_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: git-bridge-secret
+                      key: RETRY_API_TOKEN
+                - name: ENDPOINT
+                  value: "http://git-bridge/retry/mirror"
+                # Space-separated bidirectional repos from config.yaml to reconcile.
+                - name: REPOS
+                  value: "my-app"
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  # The API answers "accepted" at once and syncs in the server, so this only triggers.
+                  # Name both directions: on a bidirectional repo, auto resolves to retry_direction only.
+                  set -eu
+                  AUTH="Authorization: Bearer ${RETRY_API_TOKEN}"
+                  CT="Content-Type: application/json"
+                  post() {
+                    repo="$1"; dir="$2"
+                    echo "[reconcile] POST repo=$repo direction=$dir"
+                    wget -q -O- --header="$AUTH" --header="$CT" \
+                      --post-data="{\"repo\":\"$repo\",\"direction\":\"$dir\",\"source\":\"cron\"}" \
+                      "$ENDPOINT" || { echo "  request failed: $repo/$dir"; return 1; }
+                    echo ""
+                  }
+                  rc=0
+                  for repo in $REPOS; do
+                    post "$repo" source-to-target || rc=1
+                    sleep 5
+                    post "$repo" target-to-source || rc=1
+                    sleep 5
+                  done
+                  echo "[reconcile] done (rc=$rc)"
+                  exit $rc
+              resources:
+                requests:
+                  cpu: "10m"
+                  memory: "16Mi"
+                limits:
+                  cpu: "100m"
+                  memory: "64Mi"
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 65534
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL

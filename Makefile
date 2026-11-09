@@ -269,10 +269,12 @@ deploy-k8s: ## Deploy to Kubernetes cluster using k8s/ manifests
 	kubectl apply -f k8s/configmap.yaml
 	kubectl apply -f k8s/pvc.yaml
 	kubectl apply -f k8s/deployment.yaml
+	kubectl apply -f k8s/cronjob.yaml
 	kubectl rollout status deployment/$(DEPLOY_NAME) -n $(K8S_NAMESPACE) --timeout=120s
 
 .PHONY: undeploy-k8s
 undeploy-k8s: ## Remove from Kubernetes cluster
+	kubectl delete -f k8s/cronjob.yaml --ignore-not-found
 	kubectl delete -f k8s/deployment.yaml --ignore-not-found
 	kubectl delete -f k8s/pvc.yaml --ignore-not-found
 	kubectl delete -f k8s/configmap.yaml --ignore-not-found
