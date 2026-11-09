@@ -136,8 +136,8 @@ Credentials are injected via environment variables (`${VAR}` syntax, expanded at
 | `GITHUB_<NAME>_TOKEN` | GitHub personal access token (e.g. `GITHUB_MAIN_TOKEN`) | Yes* |
 | `SQS_<NAME>_QUEUE_URL` | SQS queue URL per consumer (e.g. `SQS_EU_QUEUE_URL`) | Yes** |
 | `SQS_<NAME>_REGION` | SQS region per consumer (e.g. `SQS_EU_REGION`) | Yes** |
-| `SQS_<NAME>_ACCESS_KEY` | AWS access key per consumer (e.g. `SQS_EU_ACCESS_KEY`) | Yes** |
-| `SQS_<NAME>_SECRET_KEY` | AWS secret key per consumer (e.g. `SQS_EU_SECRET_KEY`) | Yes** |
+| `SQS_<NAME>_ACCESS_KEY` | AWS access key per consumer (e.g. `SQS_EU_ACCESS_KEY`). Set it together with the secret key, or leave both empty to use the AWS default credential chain (IRSA / Pod Identity, instance role, `AWS_*` env) | No |
+| `SQS_<NAME>_SECRET_KEY` | AWS secret key per consumer (e.g. `SQS_EU_SECRET_KEY`), paired with the access key above | No |
 | `WEBHOOK_GITLAB_SECRET` | X-Gitlab-Token verification (empty = skip) | No |
 | `WEBHOOK_GITHUB_SECRET` | GitHub webhook secret for HMAC-SHA256 (empty = skip) | No |
 | `RETRY_API_TOKEN` | Bearer token for `/retry/mirror`. Empty disables the endpoint entirely (404), and a scheduled reconcile calls it with this token too — so it is effectively required | Yes |
@@ -385,6 +385,9 @@ kubectl apply -f k8s/pvc.yaml          # optional: for persistent mirror cache
 kubectl apply -f k8s/configmap.yaml
 kubectl apply -f k8s/deployment.yaml
 
+# 4. Hourly reconcile (set REPOS in cronjob.yaml to your bidirectional repos first)
+kubectl apply -f k8s/cronjob.yaml
+
 # Verify
 kubectl get pods -n git-bridge
 kubectl logs -n git-bridge -l app=git-bridge -f
@@ -407,10 +410,11 @@ A Helm chart is available under [`helm/git-bridge`](helm/git-bridge) with exampl
 
 ```bash
 helm install git-bridge oci://ghcr.io/somaz94/charts/git-bridge \
-  --version 0.4.0 \
   --namespace git-bridge --create-namespace \
   -f helm/git-bridge/examples/default.yaml
 ```
+
+Without `--version` Helm installs the newest chart; add `--version <chart version>` to pin one.
 
 **Alternative: classic Helm repo**
 
