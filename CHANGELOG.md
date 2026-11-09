@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.0](https://github.com/somaz94/git-bridge/compare/v0.7.0...v0.8.0) (2026-11-09)
+
+### Features
+
+- **helm:** add an optional reconcile CronJob driven by config.repos ([7975d69](https://github.com/somaz94/git-bridge/commit/7975d6924213353c2cd6fa8766033e61b69d1dc7))
+- **k8s:** add the hourly reconcile CronJob to the raw manifests ([8dd5999](https://github.com/somaz94/git-bridge/commit/8dd599950184e3d1be8b26761c520b32ae145a42))
+
+### Bug Fixes
+
+- **notify:** raise commit loss at its own level, list only commits no branch holds, and offer no force that undoes a correction ([bb0b0d9](https://github.com/somaz94/git-bridge/commit/bb0b0d992f26b7c19a39f934d32ad866651aab5b))
+
+### Documentation
+
+- document the chart's scheduled reconcile ([83264ce](https://github.com/somaz94/git-bridge/commit/83264ce34e3fd2a46907fb51b42a4cdfdcb7804d))
+- drop the stale chart version, mark SQS keys optional and add the reconcile step ([95a23b1](https://github.com/somaz94/git-bridge/commit/95a23b1828b00ac6a76229db181cbb74588913d8))
+- add related projects section to README ([6a8d797](https://github.com/somaz94/git-bridge/commit/6a8d797d21eee20599ace4c6827004fc6c6bc78b))
+
+### Builds
+
+- **deps:** Bump the go-minor group with 4 updates (#37) ([#37](https://github.com/somaz94/git-bridge/pull/37)) ([e5d7746](https://github.com/somaz94/git-bridge/commit/e5d7746614e72bf8fbf848628684857fd14acfb3))
+- **deps:** Bump the go-minor group with 4 updates (#36) ([#36](https://github.com/somaz94/git-bridge/pull/36)) ([5cf4e18](https://github.com/somaz94/git-bridge/commit/5cf4e1860af5c1b578fcefa1150bd0c64a54c63a))
+- **deps:** Bump docker/login-action (#35) ([#35](https://github.com/somaz94/git-bridge/pull/35)) ([d1998a7](https://github.com/somaz94/git-bridge/commit/d1998a7e98af0fec6f7df7a5065e5b672901abe8))
+- **deps:** Bump github.com/aws/aws-sdk-go-v2/service/sqs (#34) ([#34](https://github.com/somaz94/git-bridge/pull/34)) ([8abda07](https://github.com/somaz94/git-bridge/commit/8abda07774680b4177eae7dda4fb71050191e3e8))
+
+### Continuous Integration
+
+- run lint on push and pull requests with a golangci-lint built for go 1.26 ([e60e717](https://github.com/somaz94/git-bridge/commit/e60e717bdedafa8e2ddcb19f8e0bf9c678f63676))
+
+### Chores
+
+- **release:** bump version to v0.8.0 ([170033f](https://github.com/somaz94/git-bridge/commit/170033f1b5bd6e1540680a19074144d05d408427))
+
+### Contributors
+
+- somaz
+
+<br/>
+
 ## [v0.7.0](https://github.com/somaz94/git-bridge/compare/v0.6.0...v0.7.0) (2026-10-19)
 
 ### Features
