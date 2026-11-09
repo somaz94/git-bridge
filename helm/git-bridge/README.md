@@ -36,6 +36,9 @@ Key values:
 | `persistence.size` | PVC size | `10Gi` |
 | `service.type` | Service type | `ClusterIP` |
 | `ingress.enabled` | Enable Ingress | `false` |
+| `reconcile.enabled` | Create the scheduled reconcile CronJob | `false` |
+| `reconcile.schedule` | Cron schedule of the reconcile | `0 * * * *` |
+| `reconcile.repos` | Limit the reconcile to these `config.repos` names; empty means all | `[]` |
 
 See `values.yaml` for the full reference and `examples/` for common scenarios.
 
@@ -47,6 +50,12 @@ You can either:
 
 1. Let the chart create the Secret — set `secret.create=true` and populate `secret.data` (recommended for local testing / non-sensitive environments).
 2. Reference an externally managed Secret (e.g., from External Secrets Operator or Sealed Secrets) — set `secret.create=false` and `secret.existingSecret=<name>`.
+
+## Scheduled reconcile
+
+GitLab does not retry a webhook, so a push that arrives while the single pod is being replaced is never mirrored until something else touches the repo. `reconcile.enabled=true` adds a CronJob that calls `/retry/mirror` for every repo in `config.repos`, in the direction(s) the repo declares: both legs for `bidirectional`, the one leg otherwise. Most calls end as already up to date.
+
+It authenticates with `RETRY_API_TOKEN` from the same Secret, so that key must be in `secret.data` or in `secret.existingSecret`; the chart refuses to render the CronJob without a repo to reconcile or, for a chart-managed Secret, without the token.
 
 ## Examples
 

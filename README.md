@@ -426,6 +426,8 @@ helm install git-bridge git-bridge/git-bridge \
   -f helm/git-bridge/examples/default.yaml
 ```
 
+Add `--set reconcile.enabled=true` for the hourly reconcile CronJob, the chart's counterpart of `k8s/cronjob.yaml` (see the [chart README](helm/git-bridge/README.md#scheduled-reconcile)).
+
 **Local chart (development)**
 
 ```bash
