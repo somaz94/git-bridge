@@ -1,12 +1,15 @@
 name: Lint
 
 on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+  pull_request:
   workflow_dispatch:
-    inputs:
-      run:
-        description: 'workflow run'
-        required: true
-        default: 'true'
+
+permissions:
+  contents: read
 
 jobs:
   lint:
@@ -24,4 +27,5 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.1.6
+          # Must be built with a Go at least as new as go.mod's, or it refuses to run.
+          version: v2.15.0
