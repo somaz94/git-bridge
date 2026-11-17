@@ -30,9 +30,14 @@ const (
 // rewriteRepo is a scratch repository for building the shapes a force-push can
 // take. Every commit touches its own file unless a test says otherwise, so a
 // rebase replays cleanly by default.
+//
+// Each commit gets its own author date, one second after the last. Two commits
+// by one identity in the same second share a revisionKey, so without the clock a
+// reset-and-replace would read as a revision depending on how fast the test ran.
 type rewriteRepo struct {
-	t   *testing.T
-	dir string
+	t     *testing.T
+	dir   string
+	clock int
 }
 
 func newRewriteRepo(t *testing.T) *rewriteRepo {
@@ -54,8 +59,43 @@ func (r *rewriteRepo) commit(file, content, msg string) string {
 	r.t.Helper()
 	writeFile(r.t, r.dir+"/"+file, content)
 	r.git("add", file)
-	r.git("commit", "-q", "-m", msg)
+	r.clock++
+	date := fmt.Sprintf("@%d +0000", 1700000000+r.clock)
+	runGitEnv(r.t, r.dir, []string{"GIT_AUTHOR_DATE=" + date, "GIT_COMMITTER_DATE=" + date}, "commit", "-q", "-m", msg)
+	return r.head()
+}
+
+func (r *rewriteRepo) head() string {
+	r.t.Helper()
 	return strings.TrimSpace(r.git("rev-parse", "HEAD"))
+}
+
+// amend rewrites HEAD with new content for file, keeping its author and author
+// date as `git commit --amend` does.
+func (r *rewriteRepo) amend(file, content string) string {
+	r.t.Helper()
+	writeFile(r.t, r.dir+"/"+file, content)
+	r.git("add", file)
+	r.git("commit", "-q", "--amend", "--no-edit")
+	return r.head()
+}
+
+// becomeCommitter makes later amends and rebases record someone else as
+// committer, the way a second person rewriting the branch would. New commits
+// are authored by them too.
+func (r *rewriteRepo) becomeCommitter(name, email string) {
+	r.t.Helper()
+	r.git("config", "user.name", name)
+	r.git("config", "user.email", email)
+}
+
+func (r *rewriteRepo) report(kept, discarded string) UnmatchedReport {
+	r.t.Helper()
+	rep, err := (&defaultGitRunner{}).UnmatchedCommits(context.Background(), r.dir, kept, discarded)
+	if err != nil {
+		r.t.Fatalf("UnmatchedCommits(%s, %s) error = %v", kept, discarded, err)
+	}
+	return rep
 }
 
 // runGitMaybe runs a git command whose failure is part of the scenario — a
@@ -132,27 +172,117 @@ func TestUnmatchedCommits_ResetAndReplaceListsTheDiscardedWork(t *testing.T) {
 	}
 }
 
-// A rebase that had to resolve a conflict changes that commit's diff, so its
-// patch-id no longer matches. The check cannot tell a careful resolution from a
-// careless one, and it errs toward the alert — but only for that commit.
-func TestUnmatchedCommits_ConflictResolvedDuringRebaseIsReported(t *testing.T) {
-	r := newRewriteRepo(t)
+// conflictRebase builds a feature branch whose first commit conflicts with main,
+// rebases it with the conflict resolved by whoever is committer at the time, and
+// returns the old and rebased tips.
+func (r *rewriteRepo) conflictRebase(asCommitter func()) (old, rebased string) {
+	r.t.Helper()
 	r.git("checkout", "-q", "-b", "feature")
 	r.commit("shared.txt", "feature\n", "touches shared")
-	old := r.commit("own.txt", "own", "touches only its own file")
+	old = r.commit("own.txt", "own", "touches only its own file")
 	r.git("checkout", "-q", "main")
 	r.commit("shared.txt", "main\n", "main also touches shared")
 	r.git("checkout", "-q", "feature")
+	asCommitter()
 	// The rebase stops on the conflict; resolve it with both sides.
 	_, _ = runGitMaybe(r.dir, "rebase", "main")
-	writeFile(t, r.dir+"/shared.txt", "main\nfeature\n")
+	writeFile(r.t, r.dir+"/shared.txt", "main\nfeature\n")
 	r.git("add", "shared.txt")
-	runGitEnv(t, r.dir, []string{"GIT_EDITOR=true"}, "rebase", "--continue")
-	rebased := strings.TrimSpace(r.git("rev-parse", "HEAD"))
+	runGitEnv(r.t, r.dir, []string{"GIT_EDITOR=true"}, "rebase", "--continue")
+	return old, r.head()
+}
+
+// A rebase that had to resolve a conflict changes that commit's diff, so its
+// patch-id no longer matches. When someone other than the author resolved it,
+// the check cannot tell a careful resolution from a careless one, and it errs
+// toward the alert — but only for that commit.
+func TestUnmatchedCommits_ConflictResolvedDuringSomeoneElsesRebaseIsReported(t *testing.T) {
+	r := newRewriteRepo(t)
+	old, rebased := r.conflictRebase(func() { r.becomeCommitter("other", "other@test.com") })
 
 	lost, total := r.unmatched(rebased, old)
 	if total != 1 || len(lost) != 1 || lost[0].Subject != "touches shared" {
 		t.Errorf("lost = %+v (total %d), want only the commit whose conflict was resolved", lost, total)
+	}
+}
+
+// The same conflict resolved by the commit's own author is their revision of it.
+func TestUnmatchedCommits_ConflictResolvedByTheAuthorIsRevised(t *testing.T) {
+	r := newRewriteRepo(t)
+	old, rebased := r.conflictRebase(func() {})
+
+	if rep := r.report(rebased, old); rep.Total != 0 || rep.Revised != 1 || len(rep.Lost) != 0 {
+		t.Errorf("report = %+v, want the resolved commit counted as revised", rep)
+	}
+}
+
+// The 2026-11-17 demo-repo shape: bob pushed a commit, amended its content a
+// minute later and force-pushed. Nobody's work was lost, and it must not alert.
+func TestUnmatchedCommits_AuthorAmendingTheirOwnCommitIsRevised(t *testing.T) {
+	r := newRewriteRepo(t)
+	old := r.commit("feature.go", "first try", "feat: add the feature")
+	amended := r.amend("feature.go", "second try")
+
+	if rep := r.report(amended, old); rep.Total != 0 || rep.Revised != 1 || len(rep.Lost) != 0 {
+		t.Errorf("report = %+v, want the amended commit counted as revised", rep)
+	}
+}
+
+// The reverse of an amend: the version the author replaced is pushed back over
+// the amended one, from a stale clone or a mirror echo. Same author, date and
+// committer, but the kept side is the older commit, so the amend is what is lost.
+func TestUnmatchedCommits_OlderVersionPushedBackOverTheAmendIsLost(t *testing.T) {
+	r := newRewriteRepo(t)
+	original := r.commit("feature.go", "first try", "feat: add the feature")
+	amended := r.amend("feature.go", "second try")
+	r.git("reset", "-q", "--hard", original)
+
+	if rep := r.report(original, amended); rep.Total != 1 || rep.Revised != 0 || rep.Lost[0].SHA != amended {
+		t.Errorf("report = %+v, want the amended commit reported lost", rep)
+	}
+}
+
+// An amend keeps the author, so author and author date alone would call this a
+// revision. The committer is what shows a second person rewrote the work.
+func TestUnmatchedCommits_SomeoneElseAmendingTheCommitIsLost(t *testing.T) {
+	r := newRewriteRepo(t)
+	old := r.commit("feature.go", "first try", "feat: add the feature")
+	r.becomeCommitter("other", "other@test.com")
+	amended := r.amend("feature.go", "someone else's version")
+
+	if rep := r.report(amended, old); rep.Total != 1 || rep.Revised != 0 {
+		t.Errorf("report = %+v, want the commit reported lost", rep)
+	}
+}
+
+// Two different commits by one person, pushed to the two sides of a mirror,
+// carry different author dates. That is a divergence, not a revision.
+func TestUnmatchedCommits_SameAuthorsSeparateCommitIsLost(t *testing.T) {
+	r := newRewriteRepo(t)
+	base := r.head()
+	old := r.commit("a.txt", "pushed to one side", "work on one side")
+	r.git("reset", "-q", "--hard", base)
+	other := r.commit("b.txt", "pushed to the other side", "work on the other side")
+
+	if rep := r.report(other, old); rep.Total != 1 || rep.Revised != 0 {
+		t.Errorf("report = %+v, want the commit reported lost", rep)
+	}
+}
+
+// Commits built on the revised one by someone else keep their own author, so a
+// revision cannot launder the loss of the work stacked on it.
+func TestUnmatchedCommits_RevisionDoesNotCoverOthersCommitsOnTop(t *testing.T) {
+	r := newRewriteRepo(t)
+	first := r.commit("feature.go", "first try", "feat: add the feature")
+	r.becomeCommitter("other", "other@test.com")
+	old := r.commit("other.txt", "theirs", "built on the first try")
+	r.becomeCommitter("tester", "test@test.com")
+	r.git("reset", "-q", "--hard", first)
+	amended := r.amend("feature.go", "second try")
+
+	rep := r.report(amended, old)
+	if rep.Total != 1 || rep.Revised != 1 || len(rep.Lost) != 1 || rep.Lost[0].SHA != old {
+		t.Errorf("report = %+v, want the other author's commit lost and the revision counted", rep)
 	}
 }
 
@@ -395,12 +525,19 @@ func TestParseSideCommits_RejectsAMalformedLine(t *testing.T) {
 	if _, err := parseSideCommits("abc\x00def"); err == nil {
 		t.Error("expected an error for a line with too few fields")
 	}
-	got, err := parseSideCommits("s1\x00p1 p2\x00ann\x00merge a\x00b\ns2\x00p1\x00bob\x00plain\n")
+	if _, err := parseSideCommits("s1\x00p1\x00ann\x00a@x\x00100\x00c@x\x00soon\x00subject"); err == nil {
+		t.Error("expected an error for a committer time that is not a number")
+	}
+	got, err := parseSideCommits("s1\x00p1 p2\x00ann\x00a@x\x00100\x00c@x\x00150\x00merge a\x00b\n" +
+		"s2\x00p1\x00bob\x00b@x\x00200\x00b@x\x00250\x00plain\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 || !got[0].merge || got[1].merge || got[0].Subject != "merge a\x00b" || got[1].Author != "bob" {
 		t.Errorf("parseSideCommits = %+v", got)
+	}
+	if got[0].authorEmail != "a@x" || got[0].authorTime != "100" || got[0].committerEmail != "c@x" || got[0].committerTime != 150 {
+		t.Errorf("identity fields = %+v", got[0])
 	}
 }
 
@@ -750,6 +887,68 @@ func TestForcedUpdate_AlertSeparatesTheLossFromCommitsOnOtherBranches(t *testing
 		}
 	}
 	assertOutcome(t, rec.only(t), history.ActionMirror, history.ResultOK, history.ReasonForcedUpdate)
+}
+
+// An author revising their own commit is recorded as a rewrite: no alert, and
+// the success message carries the command that fetches the version replaced.
+func TestForcedUpdate_RevisionByItsAuthorDoesNotAlert(t *testing.T) {
+	git := rewriteGit(mockUnmatched{revised: 1}, history.ForcedRef{Ref: rewriteRef, Old: rewriteOld, New: rewriteNew})
+	notif := &mockNotifier{}
+	svc, rec := newRecordingService(defaultRepos(), makeProviders(), notif, git)
+
+	if err := svc.Sync(context.Background(), "my-repo", EventMeta{Ref: rewriteRef}); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if alert := forcedAlert(notif.messages); alert != nil {
+		t.Fatalf("an author's own revision must not alert, got %+v", alert)
+	}
+	want := "Rewritten: " + rewriteRef + " (1 commit(s) revised by their own author; previous version: git fetch <clone-url> " + rewriteOld + ")"
+	if len(notif.messages) != 1 || !strings.Contains(notif.messages[0].Body, want) {
+		t.Errorf("success message must carry %q, got %+v", want, notif.messages)
+	}
+	ev := rec.only(t)
+	assertOutcome(t, ev, history.ActionMirror, history.ResultOK, history.ReasonRewritten)
+	// The old content is in no branch, so Preserved must not claim it is.
+	if ev.Forced[0].Preserved || ev.Forced[0].Revised != 1 {
+		t.Errorf("forced = %+v, want unpreserved with 1 revised", ev.Forced[0])
+	}
+}
+
+// A revision does not soften a real loss in the same branch: the alert fires and
+// counts the revision apart from what is gone.
+func TestForcedUpdate_LossAlongsideARevisionStillAlerts(t *testing.T) {
+	lost := []history.LostCommit{{SHA: rewriteOld, Author: "a", Subject: "gone"}}
+	git := rewriteGit(mockUnmatched{lost: lost, total: 1, revised: 2},
+		history.ForcedRef{Ref: rewriteRef, Old: rewriteOld, New: rewriteNew})
+	notif := &mockNotifier{}
+	svc, rec := newRecordingService(defaultRepos(), makeProviders(), notif, git)
+
+	if err := svc.Sync(context.Background(), "my-repo", EventMeta{}); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	alert := forcedAlert(notif.messages)
+	if alert == nil {
+		t.Fatalf("a real loss must alert, got %+v", notif.messages)
+	}
+	for _, want := range []string{"lost " + rewriteOld[:10] + " a: gone", "2 more were revised by their own author"} {
+		if !strings.Contains(alert.Body, want) {
+			t.Errorf("alert is missing %q:\n%s", want, alert.Body)
+		}
+	}
+	assertOutcome(t, rec.only(t), history.ActionMirror, history.ResultOK, history.ReasonForcedUpdate)
+}
+
+// A revision and commits left on another branch, together, name both reasons.
+func TestRewriteNote_NamesEveryReason(t *testing.T) {
+	got := rewriteNote(history.ForcedRef{Old: rewriteOld, Revised: 1, Elsewhere: 2})
+	for _, want := range []string{"1 commit(s) revised by their own author", rewriteOld, "2 commit(s) left this branch"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rewriteNote = %q, missing %q", got, want)
+		}
+	}
+	if got := rewriteNote(history.ForcedRef{Preserved: true}); got != "content preserved" {
+		t.Errorf("rewriteNote(preserved) = %q", got)
+	}
 }
 
 // Tags never alert, so there is nothing to decide by checking them — and a build

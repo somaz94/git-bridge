@@ -108,8 +108,8 @@ const ReasonForcedUpdate = "forced-update"
 // ReasonRewritten narrows ResultOK the same way ReasonForcedUpdate does, for the
 // case where every overwritten ref was checked and found to have lost nothing:
 // each commit that only the old tip reached has a byte-identical patch in the new
-// history, or is still on another branch. That is what a rebase, an amend of a
-// message, or backing a merge out of a branch looks like.
+// history, is still on another branch, or was revised by its own author. That is
+// what a rebase, an amend, or backing a merge out of a branch looks like.
 //
 // It exists so the ordinary rewrite stops reading as data loss. An alert that
 // fires on every rebase is one people learn to dismiss, and then the push that
@@ -150,13 +150,20 @@ type ForcedRef struct {
 	// branch may not exist at the destination, and a later delete of it is not
 	// re-judged here.
 	Elsewhere int `json:"elsewhere,omitempty"`
+	// Revised counts the commits that left this branch with their content
+	// changed, but whose own author rewrote them: the new history holds a
+	// later-committed commit with the same author, author date and committer
+	// email. Their old content
+	// is on no branch, so Old is the only way back to it.
+	Revised int `json:"revised,omitempty"`
 }
 
 // NothingLost reports whether the overwrite was checked and every discarded
-// commit survives, either byte for byte in the new history or on another branch.
-// A failed check counts nothing, so it stays false, the alarming answer.
+// commit survives byte for byte in the new history, is on another branch, or was
+// revised by its own author. A failed check counts nothing, so it stays false,
+// the alarming answer.
 func (f ForcedRef) NothingLost() bool {
-	return f.Preserved || (f.LostTotal == 0 && f.Elsewhere > 0)
+	return f.Preserved || (f.LostTotal == 0 && (f.Elsewhere > 0 || f.Revised > 0))
 }
 
 // MaxLostCommits caps how many discarded commits are carried per ref. A reset

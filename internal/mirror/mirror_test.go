@@ -236,6 +236,7 @@ type mockUnmatched struct {
 	lost      []history.LostCommit
 	total     int
 	elsewhere int
+	revised   int
 	err       error
 }
 
@@ -246,7 +247,7 @@ func (m *mockGitRunner) UnmatchedCommits(_ context.Context, _, kept, discarded s
 	if !ok {
 		return UnmatchedReport{}, errors.New("mock: UnmatchedCommits not configured for " + key)
 	}
-	return UnmatchedReport{Lost: r.lost, Total: r.total, Elsewhere: r.elsewhere}, r.err
+	return UnmatchedReport{Lost: r.lost, Total: r.total, Elsewhere: r.elsewhere, Revised: r.revised}, r.err
 }
 
 func (m *mockGitRunner) IsAncestor(_ context.Context, _, ancestor, descendant string) bool {

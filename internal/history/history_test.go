@@ -1033,6 +1033,8 @@ func TestForcedReason(t *testing.T) {
 	lossy := ForcedRef{Ref: "refs/heads/b"}
 	moved := ForcedRef{Ref: "refs/heads/c", Elsewhere: 2}
 	mixed := ForcedRef{Ref: "refs/heads/d", Elsewhere: 2, LostTotal: 1}
+	revised := ForcedRef{Ref: "refs/heads/e", Revised: 1}
+	revisedAndLost := ForcedRef{Ref: "refs/heads/f", Revised: 1, LostTotal: 1}
 	tests := []struct {
 		name   string
 		forced []ForcedRef
@@ -1041,6 +1043,8 @@ func TestForcedReason(t *testing.T) {
 		{"none", nil, ""},
 		{"only moved to other branches", []ForcedRef{moved}, ReasonRewritten},
 		{"moved and lost", []ForcedRef{mixed}, ReasonForcedUpdate},
+		{"only revised by its author", []ForcedRef{revised}, ReasonRewritten},
+		{"revised and lost", []ForcedRef{revisedAndLost}, ReasonForcedUpdate},
 		{"all preserved", []ForcedRef{kept, kept}, ReasonRewritten},
 		{"one lossy", []ForcedRef{kept, lossy}, ReasonForcedUpdate},
 		{"only lossy", []ForcedRef{lossy}, ReasonForcedUpdate},

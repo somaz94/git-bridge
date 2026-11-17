@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -147,8 +148,8 @@ type GitRunner interface {
 	// UnmatchedCommits lists, inside dir, the commits reachable from discarded
 	// but not from kept whose patch has no byte-identical match on kept's side —
 	// what an overwrite of discarded by kept actually lost, with the ones another
-	// branch still holds counted apart. Both SHAs must be present locally; an
-	// error means nothing was judged.
+	// branch still holds and the ones their own author revised counted apart.
+	// Both SHAs must be present locally; an error means nothing was judged.
 	UnmatchedCommits(ctx context.Context, dir, kept, discarded string) (UnmatchedReport, error)
 	DeleteRef(ctx context.Context, workDir string, rem provider.Remote, refType, refName string) error
 	// RefTip reads the tip SHA of the remote rem's ref (refType/refName) with
@@ -590,8 +591,15 @@ var patchIDArgs = []string{
 // A commit with an empty diff has no patch-id either, and is not counted: it
 // carried no content, so discarding it lost none. Only its message is gone.
 //
-// Author and subject are NUL-separated because a subject can contain any
-// printable character, including the one a friendlier separator would use.
+// An unmatched commit no other branch reaches is still not counted as lost when
+// the kept side holds a later-committed commit with the same author, author date
+// and committer: its own author amended or rebased it with edits (see
+// revisionKey). It is
+// counted in Revised instead, so the overwrite stops reading as data loss while
+// the old tip stays on record for recovery.
+//
+// Fields are NUL-separated because a subject can contain any printable
+// character, including the one a friendlier separator would use.
 func (d *defaultGitRunner) UnmatchedCommits(ctx context.Context, dir, kept, discarded string) (UnmatchedReport, error) {
 	rng := kept + "..." + discarded
 
@@ -607,13 +615,29 @@ func (d *defaultGitRunner) UnmatchedCommits(ctx context.Context, dir, kept, disc
 		return UnmatchedReport{}, fmt.Errorf("%s spans %d commits, more than the %d this check compares", rng, left+right, maxClassifyCommits)
 	}
 
-	listing, err := gitOutput(ctx, dir, "log", "--right-only", "--format=%H%x00%P%x00%an%x00%s", rng)
+	listing, err := gitOutput(ctx, dir, "log", "--right-only", sideCommitFormat, rng)
 	if err != nil {
 		return UnmatchedReport{}, err
 	}
 	commits, err := parseSideCommits(listing)
 	if err != nil {
 		return UnmatchedReport{}, fmt.Errorf("log %s: %w", rng, err)
+	}
+	keptListing, err := gitOutput(ctx, dir, "log", "--left-only", "--no-merges", sideCommitFormat, rng)
+	if err != nil {
+		return UnmatchedReport{}, err
+	}
+	keptCommits, err := parseSideCommits(keptListing)
+	if err != nil {
+		return UnmatchedReport{}, fmt.Errorf("log %s: %w", rng, err)
+	}
+	// Latest committer time per key: only a rewrite committed after the discarded
+	// commit revises it.
+	revisedAt := make(map[string]int64, len(keptCommits))
+	for _, c := range keptCommits {
+		if k := c.revisionKey(); c.committerTime > revisedAt[k] {
+			revisedAt[k] = c.committerTime
+		}
 	}
 	keptIDs, err := patchIDs(ctx, dir, "--left-only", rng)
 	if err != nil {
@@ -650,6 +674,10 @@ func (d *defaultGitRunner) UnmatchedCommits(ctx context.Context, dir, kept, disc
 			rep.Elsewhere++
 			continue
 		}
+		if !c.merge && revisedAt[c.revisionKey()] > c.committerTime {
+			rep.Revised++
+			continue
+		}
 		rep.Total++
 		if len(rep.Lost) < history.MaxLostCommits {
 			rep.Lost = append(rep.Lost, c.LostCommit)
@@ -669,29 +697,62 @@ type UnmatchedReport struct {
 	// capped list, pushing the commits actually gone out of the alert (2026-11-03:
 	// 31 reported, 2 real).
 	Elsewhere int
+	// Revised counts the commits whose content changed but whose own author
+	// rewrote them, judged by revisionKey.
+	Revised int
 }
+
+// sideCommitFormat is the `git log` format parseSideCommits reads. The subject
+// goes last because it is the one field that may contain anything.
+const sideCommitFormat = "--format=%H%x00%P%x00%an%x00%ae%x00%at%x00%ce%x00%ct%x00%s"
 
 // sideCommit is one commit from one side of a symmetric difference.
 type sideCommit struct {
 	history.LostCommit
-	merge bool
+	merge          bool
+	authorEmail    string
+	authorTime     string
+	committerEmail string
+	committerTime  int64
 }
 
-// parseSideCommits reads "<sha>\0<parents>\0<author>\0<subject>" lines, newest
-// first as git log prints them.
+// revisionKey identifies a commit across an amend or a rebase by its own author.
+//
+// Decided 2026-11-17, after demo-repo version/4.7.0 raised a data-loss alert
+// for bob amending their own commit a minute after pushing it. The author
+// date survives an amend, a rebase and a cherry-pick to the second, so with the
+// author it fingerprints "the same commit, rewritten". The committer email is
+// what keeps someone else's rewrite of that commit an alert: whoever amends or
+// rebases becomes the committer. The key does not say which version is newer;
+// UnmatchedCommits compares committer times for that, so an old copy pushed
+// back over the author's amend stays an alert.
+func (c sideCommit) revisionKey() string {
+	return strings.Join([]string{c.Author, c.authorEmail, c.authorTime, c.committerEmail}, "\x00")
+}
+
+// parseSideCommits reads sideCommitFormat lines, newest first as git log prints
+// them.
 func parseSideCommits(out string) ([]sideCommit, error) {
 	var commits []sideCommit
 	for _, line := range strings.Split(out, "\n") {
 		if line == "" {
 			continue
 		}
-		fields := strings.SplitN(line, "\x00", 4)
-		if len(fields) != 4 {
+		fields := strings.SplitN(line, "\x00", 8)
+		if len(fields) != 8 {
 			return nil, fmt.Errorf("unexpected line %q", line)
 		}
+		committed, err := strconv.ParseInt(fields[6], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("unexpected committer time in %q: %w", line, err)
+		}
 		commits = append(commits, sideCommit{
-			LostCommit: history.LostCommit{SHA: fields[0], Author: fields[2], Subject: fields[3]},
-			merge:      strings.Contains(fields[1], " "),
+			LostCommit:     history.LostCommit{SHA: fields[0], Author: fields[2], Subject: fields[7]},
+			merge:          strings.Contains(fields[1], " "),
+			authorEmail:    fields[3],
+			authorTime:     fields[4],
+			committerEmail: fields[5],
+			committerTime:  committed,
 		})
 	}
 	return commits, nil
@@ -2606,8 +2667,8 @@ func (s *Service) doMirror(ctx context.Context, repoCfg config.RepoConfig, fromP
 	return nil
 }
 
-// classifyForced marks each overwritten branch Preserved, or records what it lost
-// and how many commits another branch still holds.
+// classifyForced marks each overwritten branch Preserved, or records what it lost,
+// how many commits another branch still holds and how many their author revised.
 //
 // It runs in the source's mirror dir after the push. Both tips are there: the
 // new one was just pushed from it, and the old one is what planPush confirmed
@@ -2631,10 +2692,11 @@ func (s *Service) classifyForced(ctx context.Context, mirrorDir string, forced [
 				"ref", f.Ref, "old", f.Old, "new", f.New, "error", err)
 			continue
 		}
-		f.Preserved = rep.Total == 0 && rep.Elsewhere == 0
+		f.Preserved = rep.Total == 0 && rep.Elsewhere == 0 && rep.Revised == 0
 		f.Lost = rep.Lost
 		f.LostTotal = rep.Total
 		f.Elsewhere = rep.Elsewhere
+		f.Revised = rep.Revised
 	}
 }
 
@@ -2828,7 +2890,8 @@ func (s *Service) reportHeld(repoCfg config.RepoConfig, meta EventMeta, rep held
 //
 // Of the branches, only the ones that may have lost commits interrupt. A branch
 // classifyForced found NothingLost on was rewritten, not destroyed — a rebase, an
-// amend, or commits still on another branch — and alerting on it is the
+// amend, an author revising their own commit, or commits still on another
+// branch — and alerting on it is the
 // routine-traffic trap again, one rebase at a time. It stays in the log, the
 // history and the success message. When a loss and such a rewrite land in the
 // same push, the alert names both, so the reader sees the whole push and not just
@@ -2843,7 +2906,7 @@ func (s *Service) reportForced(repoCfg config.RepoConfig, meta EventMeta, rep fo
 				"ref", f.Ref, "old", f.Old, "new", f.New, "detail", rewriteNote(f))
 		} else {
 			logger.Warn("forced update: destination ref overwritten non-fast-forward",
-				"ref", f.Ref, "old", f.Old, "new", f.New, "lost_commits", f.LostTotal, "elsewhere", f.Elsewhere)
+				"ref", f.Ref, "old", f.Old, "new", f.New, "lost_commits", f.LostTotal, "elsewhere", f.Elsewhere, "revised", f.Revised)
 		}
 		if !strings.HasPrefix(f.Ref, refsHeadsPrefix) {
 			continue
@@ -2920,15 +2983,29 @@ func lostCommitLines(f history.ForcedRef) []string {
 	if f.Elsewhere > 0 {
 		out = append(out, fmt.Sprintf("    %d more left this branch but remain on other branches of the pushing side", f.Elsewhere))
 	}
+	if f.Revised > 0 {
+		out = append(out, fmt.Sprintf("    %d more were revised by their own author", f.Revised))
+	}
 	return out
 }
 
 // rewriteNote says why an overwrite that lost nothing lost nothing.
+//
+// A revision is the one case where the old content is gone from every branch,
+// so it carries the recovery command: the author may still want the version
+// they replaced, and the old tip is named nowhere else in the message.
 func rewriteNote(f history.ForcedRef) string {
-	if f.Elsewhere == 0 {
+	if f.Elsewhere == 0 && f.Revised == 0 {
 		return "content preserved"
 	}
-	return fmt.Sprintf("%d commit(s) left this branch, still on other branches of the pushing side", f.Elsewhere)
+	var notes []string
+	if f.Revised > 0 {
+		notes = append(notes, fmt.Sprintf("%d commit(s) revised by their own author; previous version: git fetch <clone-url> %s", f.Revised, f.Old))
+	}
+	if f.Elsewhere > 0 {
+		notes = append(notes, fmt.Sprintf("%d commit(s) left this branch, still on other branches of the pushing side", f.Elsewhere))
+	}
+	return strings.Join(notes, "; ")
 }
 
 // shortSHA abbreviates a commit name for display. The full name is still what
