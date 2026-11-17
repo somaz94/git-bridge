@@ -320,8 +320,8 @@ disk I/O.
       "repo": "git-bridge-test",
       "action": "mirror",
       "source": "webhook",
-      "from": "gitlab/team/test-repo",
-      "to": "codecommit/git-bridge-test",
+      "from": "gitlab-main/team/test-repo",
+      "to": "codecommit-eu/git-bridge-test",
       "ref": "refs/tags/v1.0.0",
       "result": "skip",
       "reason": "already-up-to-date",
@@ -336,7 +336,8 @@ disk I/O.
 | `action` | `mirror` (branch/tag sync), `delete` (ref delete propagation) or `restore` (a console click re-creating a ref a delete removed). A restore is its own action rather than a mirror because nothing upstream asked for it — a person did |
 | `source` | What triggered the sync: `webhook`, `sqs`, `cron` (the reconcile CronJob), `retry-api` (a hand-run call), or `console` |
 | `result` | `ok`, `skip`, or `fail`. Failures also carry `err` |
-| `reason` | Narrows `result`. Skips are `already-up-to-date`, `ref-override`, `no-refs-to-push` or `already-absent`; failures name the step that failed; a success can carry `forced-update`, meaning the push worked but overwrote a ref non-fast-forward and may have lost commits, or `rewritten`, meaning every overwritten ref was checked and nothing is gone: each discarded commit's change is present byte for byte in the new history (`git patch-id --verbatim`; messages are not compared), the commit is still on another branch of the pushing side, or its own author revised it (the new history holds a later-committed commit with the same author, author date and committer email). Each `forced` entry carries `preserved`; an unpreserved one lists the commits no branch reaches any more in `lost` (`sha`, `author`, `subject`, capped), the full count in `lost_total`, the commits still on another branch in `elsewhere`, and the commits their own author revised in `revised`. `preserved` stays false when only `elsewhere` or `revised` is set, because those commits are no longer in the new history. A refused restore is `ref-exists` (the ref came back on the destination) or `object-gone` (git collected the commit); `create-ref` is a restore that failed at the push itself |
+| `reason` | Narrows `result`. Skips are `already-up-to-date`, `ref-override`, `no-refs-to-push`, `already-absent`, `destination-ahead` (the push guard withheld every ref because pushing would have rewound the destination) or `lease-rejected` (the destination moved between the check and the push, so git refused the lease); failures name the step that failed; a success can carry `forced-update`, meaning the push worked but overwrote a ref non-fast-forward and may have lost commits, or `rewritten`, meaning every overwritten ref was checked and nothing is gone: each discarded commit's change is present byte for byte in the new history (`git patch-id --verbatim`; messages are not compared), the commit is still on another branch of the pushing side, or its own author revised it (the new history holds a later-committed commit with the same author, author date and committer email). Each `forced` entry carries `preserved`; an unpreserved one lists the commits no branch reaches any more in `lost` (`sha`, `author`, `subject`, capped), the full count in `lost_total`, the commits still on another branch in `elsewhere`, and the commits their own author revised in `revised`. `preserved` stays false when only `elsewhere` or `revised` is set, because those commits are no longer in the new history. A refused restore is `ref-exists` (the ref came back on the destination) or `object-gone` (git collected the commit); `create-ref` is a restore that failed at the push itself |
+| `held` | Only when the push guard withheld refs: one entry per ref with `ref`, `reason` (`destination-ahead`, or `destination-unknown` when the destination holds a commit this side has never fetched) and `dest`, the destination tip that stopped the write. A push that carried some refs and withheld others still lists the withheld ones. This is what the console's force button acts on |
 | `deleted_tip` | Only on a `delete` that actually removed something: the SHA the ref pointed at, read just before the delete ran. Absent otherwise, including a delete that found the ref already gone. A delete leaves nothing behind to look up — afterwards the destination names neither the ref nor the commit — so this is the only record of what was discarded |
 | `restored_tip` | Only on a `restore` that actually re-created the ref: the SHA it was put back at. The counterpart to `deleted_tip` — the two events together tell the whole story of a ref that went away and came back, without correlating them by timestamp |
 | `actor` | Who a console-driven action is attributed to, read from the portal's `X-Auth-User` header. Set only for actions a person triggers, because those are the only ones with a person behind them — a webhook or an SQS event has a pusher, not an operator |
@@ -437,7 +438,7 @@ in-process and the portal session is the only credential.
 ```json
 {
   "repo": "git-bridge-test",
-  "to": "codecommit/git-bridge-test",
+  "to": "codecommit-eu/git-bridge-test",
   "ref": "refs/heads/feature-x",
   "sha": "c70e089e6660bfe57cf28a6df84aafad0e7e2b69"
 }
@@ -446,7 +447,7 @@ in-process and the portal session is the only credential.
 | Field | Required | Description |
 |-------|----------|-------------|
 | `repo` | Yes | `RepoConfig.Name` |
-| `to` | Yes | Which side to put the ref back on, in the `<provider-type>/<path>` form the history event's `to` field carries. The caller is acting on a row it is looking at, so it names the destination that row named rather than leaving the server to guess |
+| `to` | Yes | Which side to put the ref back on, in the `<provider-name>/<path>` form the history event's `to` field carries (the `providers:` key, not its type). Rows recorded before that notation carry `<provider-type>/<path>`, which is still matched so their buttons keep working. The caller is acting on a row it is looking at, so it names the destination that row named rather than leaving the server to guess |
 | `ref` | Yes | Full ref — `refs/heads/<name>` or `refs/tags/<name>`. Nothing else is accepted |
 | `sha` | Yes | Full 40-character object name. An abbreviated one is rejected here rather than by the remote, which rejects it too |
 
@@ -466,7 +467,7 @@ Unknown fields are rejected rather than ignored, the same as retry.
 | Status Code | Description |
 |-------------|-------------|
 | 200 | The ref was re-created — or was already at exactly that tip, which is recorded as a `skip` / `already-up-to-date` and is not an error |
-| 400 | Missing `repo` / `to`, a `ref` that is not `refs/heads/` or `refs/tags/`, a `sha` that is not 40 hex characters, an unknown field, or invalid JSON. Also `unknown-side` — `to` is not a side of that repo, or is an older-notation destination that names both sides at once |
+| 400 | Missing `repo` / `to`, a `ref` that is not `refs/heads/` or `refs/tags/`, a `sha` that is not 40 hex characters, an unknown field, or invalid JSON. Also `unknown-side` — `to` is not a side of that repo, or is an older-notation destination that names both sides at once — and `unknown-repo` — `repo` is not configured for mirroring |
 | 404 | Restore not wired up (no mirror service). `/console/api/me` reports this as `restore_enabled: false` so the page hides the button instead of offering one that 404s |
 | 405 | Method not allowed (only POST) |
 | 403 | A `direction` or `ref_overrides` rule forbids writing to that side |
@@ -548,16 +549,18 @@ Like retry and restore, no API token is involved.
 ```json
 {
   "repo": "git-bridge-test",
-  "to": "codecommit/git-bridge-test",
-  "ref": "refs/heads/version/4.3.0"
+  "to": "codecommit-eu/git-bridge-test",
+  "ref": "refs/heads/version/4.3.0",
+  "dest": "c70e089e6660bfe57cf28a6df84aafad0e7e2b69"
 }
 ```
 
 | Field | Required | Description |
 |-------|----------|-------------|
 | `repo` | Yes | `RepoConfig.Name` |
-| `to` | Yes | Which side to apply the rewind on, in the `<provider-type>/<path>` form the history event's `to` field carries. A destination rather than a direction, for the same reason restore takes one: the row the operator clicked knows which side it was writing to, and asking the browser to translate that into `source-to-target` invites it to get the translation backwards on the one call whose purpose is to overwrite |
+| `to` | Yes | Which side to apply the rewind on, in the `<provider-name>/<path>` form the history event's `to` field carries, with the same fallback for older `<provider-type>/<path>` rows as restore. A destination rather than a direction, for the same reason restore takes one: the row the operator clicked knows which side it was writing to, and asking the browser to translate that into `source-to-target` invites it to get the translation backwards on the one call whose purpose is to overwrite |
 | `ref` | Yes | Full ref. One call moves one ref — there is no repo-wide force |
+| `dest` | Yes | The destination tip the hold recorded (the held entry's `dest`), i.e. the commit being overwritten. It must match the recorded hold, and it becomes the push's lease |
 
 Unknown fields are rejected rather than ignored.
 
@@ -574,10 +577,10 @@ Unknown fields are rejected rather than ignored.
 | Status Code | Description |
 |-------------|-------------|
 | 202 | Accepted; the sync runs in the background and its outcome appears in the history as a `forced-update`, or as `rewritten` when nothing was lost |
-| 400 | Missing `repo` / `to` / `ref`, an unknown field, or invalid JSON |
+| 400 | Missing `repo` / `to` / `ref` / `dest`, an unknown field, or invalid JSON |
 | 404 | Force not wired up (no mirror service). `/console/api/me` reports this as `force_enabled: false` so the page hides the button |
 | 405 | Method not allowed (only POST) |
-| 409 | No hold matching this repo, destination and ref is recorded in the visible history. Most often that means the hold already resolved on its own, which is the good outcome |
+| 409 | No hold matching this repo, destination, ref and `dest` tip is recorded in the visible history. Most often that means the hold already resolved on its own, which is the good outcome |
 | 413 | Body over 4 KB. This payload is a handful of short fields, so the cap sits far below the webhook one |
 | 415 | `Content-Type` is not `application/json`, the same gate restore and retry carry |
 
@@ -598,6 +601,43 @@ What the force does **not** skip is the lease. The push still carries the
 destination tip it was checked against, so a commit arriving between the check
 and the write is still refused. Authorising a rewind of the tip you were shown
 is not the same as authorising the overwrite of whatever lands while you decide.
+
+<br/>
+
+### GET /console/api/me
+
+The viewer the portal authenticated, plus what the page needs to decide which
+controls to show. Read from the headers the reverse-proxy portal sets when it
+proxies (`X-Auth-User`, `X-Auth-Name`, `X-Auth-Email`, `X-Auth-Groups`).
+
+#### Response
+
+```json
+{
+  "user": "jdoe",
+  "name": "Jane Doe",
+  "email": "jdoe@example.com",
+  "groups": ["devops"],
+  "api_docs_url": "https://git-bridge.example.com/api-docs",
+  "restore_enabled": true,
+  "force_enabled": true
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `user` / `name` / `email` | The matching `X-Auth-*` header, trimmed. Empty when the console is reached without the portal, such as through a port-forward |
+| `groups` | `X-Auth-Groups` split on commas. `[]`, never `null`, when there are none |
+| `api_docs_url` | `server.api_docs_url` from the config. Empty hides the console's API docs link |
+| `restore_enabled` | Whether `POST /console/api/restore` is wired up. The page hides the restore button when it is not |
+| `force_enabled` | Whether `POST /console/api/force` is wired up, for the same reason |
+
+The response carries `Cache-Control: no-store`, because identity is per viewer.
+
+| Status Code | Description |
+|-------------|-------------|
+| 200 | Identity returned |
+| 405 | Method not allowed (only GET) |
 
 <br/>
 

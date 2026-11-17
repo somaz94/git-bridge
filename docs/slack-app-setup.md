@@ -112,7 +112,7 @@ Git-Bridge sends notifications in the following cases:
 | Ref restore success | `Ref Restored` | `success` (✅) | A console click put back a ref a delete removed, at the tip that delete recorded. The body carries `Restored tip: <sha>` and `Restored by: <actor>`. The actor is on it because this writes to a real repository — unlike a webhook or SQS event, which has a pusher rather than an operator, someone chose to do this and the channel is where that becomes visible |
 | Ref restore failure | `Ref Restore Failed` | `error` (❌) | The restore was refused or failed. The body carries `Requested by: <actor>` and `Error: <what>`. All three exits send the same shape — the ref already exists on the destination, git has garbage-collected the commit, or the push failed — so a refusal is as legible in the channel as a success. A refusal is the expected outcome when someone re-created the branch in the meantime, not an incident |
 | Push withheld | `Push Withheld` | `warning` (⚠️) | The push guard withheld at least one **branch** because writing would have discarded commits at the destination. Nothing was written. The body carries `Route:`, `Target:` and a `Withheld refs:` list (`<ref>: destination is at <sha> (<reason>)`), then guidance per reason. `destination-ahead` means the destination already holds what this side would have pushed: a late echo settles on its own, a rewind someone meant to make does not, and each such branch gets a ready-to-run `curl … /retry/mirror` force command, the counterpart of the console's per-ref force button. `destination-unknown` means the destination holds a commit this side has never fetched: either a push still on its way here, which settles on its own, or a correction made on that side. Forcing would discard it, so when the reverse route can carry it the alert points there and prints no command, leaving the console button and the retry API as the deliberate ways to overwrite, which is also the way out when both routes hold the ref because the two sides diverged. A one-way repo, or a ref a `ref_override` pins to this leg, has no reverse route and keeps the command. Source: `reportHeld()` in [internal/mirror/mirror.go](../internal/mirror/mirror.go) |
-| Forced overwrite | `Commits Overwritten` | `data-loss` (🚨) | The push succeeded, but at least one **branch** was overwritten non-fast-forward and may have lost commits. The body opens with what was lost, because Slack folds a long message: each such ref as `<ref>: <old> → <new>`, followed by `lost <sha> <author>: <subject>` for each commit no branch reaches any more and whose change is not present byte for byte in the new history (capped, with `… and N more`), a count of the commits that left this branch but remain on other branches of the pushing side, then a line saying the sync itself succeeded, route, duration and target, and a `git fetch <clone-url> <old>` recovery line per branch. A branch rewritten in the same push without losing anything is named under `Also rewritten in this push`. It **replaces** the success notification for that push, rather than arriving alongside it — the two together would read as a contradiction — which is why it carries route, duration and target itself |
+| Forced overwrite | `Commits Overwritten` | `data-loss` (🚨) | The push succeeded, but at least one **branch** was overwritten non-fast-forward and may have lost commits. The body opens with what was lost, because Slack folds a long message: each such ref as `<ref>: <old> → <new>`, followed by `lost <sha> <author>: <subject>` for each commit no branch reaches any more and whose change is not present byte for byte in the new history (capped, with `… and N more`), a count of the commits that left this branch but remain on other branches of the pushing side, a count of the commits their own author revised, then a line saying the sync itself succeeded, route, duration and target, and a `git fetch <clone-url> <old>` recovery line per branch. A branch rewritten in the same push without losing anything is named under `Also rewritten in this push`. It **replaces** the success notification for that push, rather than arriving alongside it — the two together would read as a contradiction — which is why it carries route, duration and target itself |
 
 > No notification is sent when the push is already up-to-date (loop detection).
 >
@@ -127,9 +127,14 @@ Git-Bridge sends notifications in the following cases:
 > commits all remain on other branches of the pushing side is treated the same way,
 > with a line naming how many left it. That is judged when the overwrite happens: the
 > branch may not exist at the destination, and deleting it later raises no such alert.
-> For a commit no other branch reaches, the check errs toward the alert: a merge
-> commit, a rebase that resolved a conflict, a whitespace-only difference, or a check
-> that fails to run all still raise `Commits Overwritten`. A tag does not count as
+> So is a commit its own author revised: the new history holds a later-committed
+> commit with the same author, author date and committer, as an amend or a rebase
+> with edits leaves. Its line names how many were revised and carries the
+> `git fetch <clone-url> <old>` command for the version replaced. A different
+> committer, or an older version pushed back over the revised one, still alerts.
+> For any other commit no branch reaches, the check errs toward the alert: a merge
+> commit, a rebase in which someone else resolved a conflict, a whitespace-only
+> difference, or a check that fails to run all still raise `Commits Overwritten`. A tag does not count as
 > keeping a commit, because a reused build tag can be re-pointed at any moment.
 >
 > `warning` (⚠️) is emitted by `Push Withheld`, and the forced-overwrite alert is
@@ -208,7 +213,8 @@ git push <clone-url> c70e089e6660bfe57cf28a6df84aafad0e7e2b69:refs/heads/delete-
 > before the delete. It is a full 40-character object name on purpose: a remote
 > rejects an abbreviated one, so a short SHA would be a record nobody could act
 > on. Substitute the destination's clone URL — named by the `Route:` line — for
-> `<clone-url>`; the URL is never printed because it carries the credentials.
+> `<clone-url>`. The service's own remote URLs carry no credentials (those reach
+> git through `GIT_ASKPASS`), so use the clone URL your own git authenticates with.
 > git keeps the objects until it garbage-collects, so the window is real but
 > not indefinite.
 >
